@@ -14,7 +14,7 @@ import {
   format, startOfWeek, endOfWeek, addWeeks, subWeeks, addDays, isSameDay,
   addMonths, subMonths,
 } from 'date-fns';
-import { generateSchedule } from '../lib/scheduler';
+import { generateSchedule, FIXED_SCHEDULES } from '../lib/scheduler';
 
 const MONTHS = [
   'January','February','March','April','May','June',
@@ -27,16 +27,49 @@ const ROLE_OPTIONS = [
 ];
 
 const ROLE_COLORS = {
-  'Instructor':        { bg: '#0d9488', text: '#fff' },
-  'Lead':              { bg: '#f59e0b', text: '#fff' },
-  'Host':              { bg: '#0d9488', text: '#fff' },
-  'Tutor':             { bg: '#3b82f6', text: '#fff' },
-  'Admin':             { bg: '#8b5cf6', text: '#fff' },
-  'Manager':           { bg: '#8b5cf6', text: '#fff' },
-  'Center Director':   { bg: '#ec4899', text: '#fff' },
-  'Dir. of Education': { bg: '#ec4899', text: '#fff' },
-  'default':           { bg: '#0d9488', text: '#fff' },
+  'Instructor':        { bg: '#16a34a', text: '#fff' },  // green
+  'Lead':              { bg: '#ea580c', text: '#fff' },  // orange
+  'Host':              { bg: '#2563eb', text: '#fff' },  // blue
+  'Admin':             { bg: '#dc2626', text: '#fff' },  // red
+  'Manager':           { bg: '#ca8a04', text: '#fff' },  // yellow
+  'Dir. of Education': { bg: '#db2777', text: '#fff' },  // pink
+  'Center Director':   { bg: '#92400e', text: '#fff' },  // brown
+  'Tutor':             { bg: '#7c3aed', text: '#fff' },  // purple fallback
+  'default':           { bg: '#16a34a', text: '#fff' },
 };
+
+// Parse "3:00 PM - 7:00 PM" or "11:30 AM - 7:30 PM" into decimal hours
+function parseFixedShiftHours(shiftStr) {
+  if (!shiftStr || shiftStr.toLowerCase() === 'off') return 0;
+  const parts = shiftStr.split(' - ');
+  if (parts.length !== 2) return 0;
+  const parseTime = (s) => {
+    const m = s.trim().match(/^(\d+):(\d+)\s*(AM|PM)$/i);
+    if (!m) return 0;
+    let h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    const ampm = m[3].toUpperCase();
+    if (ampm === 'PM' && h !== 12) h += 12;
+    if (ampm === 'AM' && h === 12) h = 0;
+    return h + min / 60;
+  };
+  const diff = parseTime(parts[1]) - parseTime(parts[0]);
+  return diff > 0 ? diff : 0;
+}
+
+// Get total hours from fixed staff on a given day name + week of month
+function fixedStaffHoursForDay(dayName, weekOfMonth) {
+  let total = 0;
+  for (const [, sched] of Object.entries(FIXED_SCHEDULES)) {
+    const shift = sched[dayName];
+    if (!shift || shift.toLowerCase() === 'off') continue;
+    if (dayName === 'Saturday' && sched.saturday_weeks) {
+      if (!sched.saturday_weeks.includes(weekOfMonth)) continue;
+    }
+    total += parseFixedShiftHours(shift);
+  }
+  return total;
+}
 
 function roleColor(role) {
   return ROLE_COLORS[role] || ROLE_COLORS['default'];
@@ -500,9 +533,14 @@ export default function Admin() {
         <div className="space-y-2">
           {/* Legend + tips */}
           <div className="flex flex-wrap items-center gap-4 px-1 mb-2 text-xs text-gray-500">
-            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full bg-orange-400" /> Open Shift</span>
-            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full bg-teal-500" /> Instructor</span>
-            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full bg-amber-400" /> Lead</span>
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full bg-orange-500" /> Open Shift</span>
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full" style={{backgroundColor:'#16a34a'}} /> Instructor</span>
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full" style={{backgroundColor:'#ea580c'}} /> Lead</span>
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full" style={{backgroundColor:'#2563eb'}} /> Host</span>
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full" style={{backgroundColor:'#dc2626'}} /> Admin</span>
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full" style={{backgroundColor:'#ca8a04'}} /> Manager</span>
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full" style={{backgroundColor:'#db2777'}} /> Dir. of Ed.</span>
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full" style={{backgroundColor:'#92400e'}} /> Center Director</span>
             <span className="ml-auto flex items-center gap-1 text-gray-400 italic">
               Click any cell to add a shift · Click <Plus size={10} className="inline" /> to add open shift
             </span>
@@ -536,9 +574,13 @@ export default function Admin() {
                     {weekDays.map(d => {
                       const isToday = isSameDay(d, new Date());
                       const ds = format(d, 'yyyy-MM-dd');
-                      const dayTotalHrs = shifts
+                      const dayName = format(d, 'EEEE'); // 'Monday', 'Tuesday' etc
+                      const weekOfMonth = Math.floor((d.getDate() - 1) / 7) + 1;
+                      const firestoreHrs = shifts
                         .filter(s => s.date === ds && s.status !== 'draft')
                         .reduce((sum, s) => sum + shiftHours(s), 0);
+                      const fixedHrs = fixedStaffHoursForDay(dayName, weekOfMonth);
+                      const dayTotalHrs = firestoreHrs + fixedHrs;
                       const dayHrsDisplay = isNaN(dayTotalHrs) ? 0 : Math.round(dayTotalHrs * 10) / 10;
                       return (
                         <th key={d.toISOString()} className={`text-center py-2 px-1 font-medium w-[13%] ${isToday ? 'bg-red-50 text-red-700' : 'text-gray-600'}`}>
@@ -667,13 +709,17 @@ export default function Admin() {
                     <td className="px-4 py-2 border-r text-xs font-semibold text-gray-600">Day Totals</td>
                     {weekDays.map(d => {
                       const ds = format(d, 'yyyy-MM-dd');
+                      const dayName = format(d, 'EEEE');
+                      const weekOfMonth = Math.floor((d.getDate() - 1) / 7) + 1;
                       const dayShiftsAll = shifts.filter(s => s.date === ds && s.status !== 'draft');
                       const count = dayShiftsAll.length;
-                      const hrs = dayShiftsAll.reduce((sum, s) => sum + shiftHours(s), 0);
+                      const firestoreHrs = dayShiftsAll.reduce((sum, s) => sum + shiftHours(s), 0);
+                      const fixedHrs = fixedStaffHoursForDay(dayName, weekOfMonth);
+                      const hrs = firestoreHrs + fixedHrs;
                       const hrsDisplay = isNaN(hrs) ? 0 : Math.round(hrs * 10) / 10;
                       return (
                         <td key={ds} className="text-center py-2 text-xs text-gray-500">
-                          {count > 0 ? (
+                          {count > 0 || fixedHrs > 0 ? (
                             <div>
                               <span className="font-semibold text-gray-700">{count} staff</span>
                               <div className="text-purple-600 font-semibold">{hrsDisplay}h total</div>
