@@ -3,9 +3,8 @@ import {
   collection, onSnapshot, doc, updateDoc, deleteDoc,
   addDoc, query, orderBy, writeBatch,
 } from 'firebase/firestore';
-import { db, serverTimestamp } from '../firebase';
+import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
-import { notifyOpenShift, notifySchedulePosted } from '../lib/emailService';
 import {
   Settings, UserCheck, UserX, Trash2, Clock, Tag,
   ChevronLeft, ChevronRight, Table, Wand2, CheckCircle,
@@ -356,49 +355,11 @@ export default function Admin() {
 
   // Open Shifts
   const handleAddOpenShift = async ({ date, startTime, endTime, role }) => {
-    const shift = {
+    await addDoc(collection(db, 'openShifts'), {
       date, startTime, endTime, role,
       status: 'open', claimedBy: null, claimedByName: null,
       postedAt: new Date().toISOString(),
-    };
-    const shiftRef = await addDoc(collection(db, 'openShifts'), shift);
-
-    // Format date/time for chat message
-    const dateFormatted = new Date(date + 'T00:00:00').toLocaleDateString('en-US', {
-      weekday: 'long', month: 'short', day: 'numeric',
     });
-    const fmt = (t) => {
-      if (!t) return '';
-      const [hStr, mStr] = t.split(':');
-      let h = parseInt(hStr, 10);
-      const m = parseInt(mStr, 10);
-      const ampm = h >= 12 ? 'PM' : 'AM';
-      if (h > 12) h -= 12;
-      if (h === 0) h = 12;
-      return m === 0 ? `${h}:00 ${ampm}` : `${h}:${String(m).padStart(2, '0')} ${ampm}`;
-    };
-    const timeStr = `${fmt(startTime)} – ${fmt(endTime)}`;
-
-    // Post to chat so all staff see it immediately
-    await addDoc(collection(db, 'chat'), {
-      text: `📢 Open shift available!\n\n${dateFormatted}  ·  ${timeStr}${role ? `  ·  ${role}` : ''}\n\nAnyone able to take this? Claim it on the Schedule page.`,
-      userId: 'system',
-      userName: 'Mathnasium Langley',
-      userRole: 'system',
-      createdAt: serverTimestamp(),
-      type: 'open_shift_alert',
-      openShiftId: shiftRef.id,
-      shiftDate: date,
-      shiftStartTime: startTime,
-      shiftEndTime: endTime,
-      shiftRole: role || '',
-    });
-
-    // Email all approved staff
-    const staffEmails = approvedUsers
-      .filter(u => u.email)
-      .map(u => ({ email: u.email, displayName: u.displayName }));
-    await notifyOpenShift({ ...shift, id: shiftRef.id }, staffEmails);
   };
 
   const handleDeleteOpenShift = id => deleteDoc(doc(db, 'openShifts', id));
@@ -477,27 +438,8 @@ export default function Admin() {
         }
       }
       await batch.commit();
-
-      const totalShifts = draftSchedule.days.reduce((s, d) => s + d.assignedEmployees.length, 0);
-
-      // Post announcement to chat
-      await addDoc(collection(db, 'chat'), {
-        text: `📅 The ${draftSchedule.month} ${draftSchedule.year} schedule has been posted!\n\n${totalShifts} shifts across ${draftSchedule.days.length} working days. Check your schedule on the Schedule page.`,
-        userId: 'system',
-        userName: 'Mathnasium Langley',
-        userRole: 'system',
-        createdAt: serverTimestamp(),
-        type: 'schedule_posted',
-      });
-
-      // Email all approved staff
-      const staffEmails = approvedUsers
-        .filter(u => u.email)
-        .map(u => ({ email: u.email, displayName: u.displayName }));
-      await notifySchedulePosted(draftSchedule, staffEmails);
-
       setDraftSchedule(null);
-      alert(`✅ Schedule posted! ${totalShifts} shifts created. Staff have been notified by email.`);
+      alert(`✅ Schedule posted! ${draftSchedule.days.reduce((s,d) => s + d.assignedEmployees.length, 0)} shifts created.`);
     } catch (err) {
       setSchedError(`Failed to post: ${err.message}`);
     } finally {
@@ -593,10 +535,20 @@ export default function Admin() {
                     <th className="text-left px-4 py-2 font-semibold text-gray-600 w-36 border-r">INSTRUCTOR</th>
                     {weekDays.map(d => {
                       const isToday = isSameDay(d, new Date());
+                      const ds = format(d, 'yyyy-MM-dd');
+                      const dayTotalHrs = shifts
+                        .filter(s => s.date === ds && s.status !== 'draft')
+                        .reduce((sum, s) => sum + shiftHours(s), 0);
+                      const dayHrsDisplay = isNaN(dayTotalHrs) ? 0 : Math.round(dayTotalHrs * 10) / 10;
                       return (
                         <th key={d.toISOString()} className={`text-center py-2 px-1 font-medium w-[13%] ${isToday ? 'bg-red-50 text-red-700' : 'text-gray-600'}`}>
                           <div className="text-xs uppercase tracking-wide">{format(d, 'EEE')}</div>
                           <div className={`text-base font-bold ${isToday ? 'text-red-600' : 'text-gray-800'}`}>{format(d, 'd')}</div>
+                          {dayHrsDisplay > 0 && (
+                            <div className={`text-xs font-semibold mt-0.5 ${isToday ? 'text-red-500' : 'text-purple-600'}`}>
+                              {dayHrsDisplay}h
+                            </div>
+                          )}
                         </th>
                       );
                     })}
@@ -679,12 +631,14 @@ export default function Admin() {
                               {/* Existing shifts */}
                               {dayShifts.map(s => {
                                 const { bg, text } = roleColor(s.role);
+                                const hrs = shiftHours(s);
+                                const hrsDisplay = isNaN(hrs) || hrs <= 0 ? '' : `${Math.round(hrs * 10) / 10}h`;
                                 return (
                                   <div key={s.id}
                                     onClick={() => setEditShiftModal(s)}
                                     className="rounded px-1.5 py-1 mb-0.5 cursor-pointer hover:opacity-80 transition-opacity"
                                     style={{ backgroundColor: bg, color: text }}>
-                                    <div className="font-semibold" style={{fontSize:'11px'}}>{fmtHHMM(s.startTime)}–{fmtHHMM(s.endTime)}</div>
+                                    <div className="font-semibold" style={{fontSize:'11px'}}>{fmtHHMM(s.startTime)}–{fmtHHMM(s.endTime)}{hrsDisplay ? ` · ${hrsDisplay}` : ''}</div>
                                     {s.role && <div className="uppercase tracking-wide opacity-90" style={{fontSize:'10px'}}>{s.role}</div>}
                                   </div>
                                 );
@@ -713,10 +667,18 @@ export default function Admin() {
                     <td className="px-4 py-2 border-r text-xs font-semibold text-gray-600">Day Totals</td>
                     {weekDays.map(d => {
                       const ds = format(d, 'yyyy-MM-dd');
-                      const count = shifts.filter(s => s.date === ds && s.status !== 'draft').length;
+                      const dayShiftsAll = shifts.filter(s => s.date === ds && s.status !== 'draft');
+                      const count = dayShiftsAll.length;
+                      const hrs = dayShiftsAll.reduce((sum, s) => sum + shiftHours(s), 0);
+                      const hrsDisplay = isNaN(hrs) ? 0 : Math.round(hrs * 10) / 10;
                       return (
                         <td key={ds} className="text-center py-2 text-xs text-gray-500">
-                          {count > 0 ? <span className="font-semibold text-gray-700">{count}</span> : '–'}
+                          {count > 0 ? (
+                            <div>
+                              <span className="font-semibold text-gray-700">{count} staff</span>
+                              <div className="text-purple-600 font-semibold">{hrsDisplay}h total</div>
+                            </div>
+                          ) : '–'}
                         </td>
                       );
                     })}

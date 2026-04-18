@@ -20,7 +20,9 @@ export default function Layout({ children }) {
   const location = useLocation();
   const [open, setOpen] = useState(false);
 
-  const items = profile?.role === 'owner' ? [...navItems, ...adminItems] : navItems;
+  const isOwner = profile?.role === 'owner';
+  const filteredNav = isOwner ? navItems.filter(i => i.to !== '/schedule') : navItems;
+  const items = isOwner ? [...filteredNav, ...adminItems] : filteredNav;
 
   return (
     <div className="flex h-screen bg-gray-50">
