@@ -451,6 +451,62 @@ export default function Admin() {
     setEditingDay(p => ({ ...p, assignedEmployees: [...p.assignedEmployees, name] }));
   };
 
+  // Convert "11:00 AM" → "11:00", "2:00 PM" → "14:00" for Firestore storage
+  const toHHMM = (timeStr) => {
+    const m = timeStr.trim().match(/^(\d+):(\d+)\s*(AM|PM)$/i);
+    if (!m) return '15:00';
+    let h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    const ampm = m[3].toUpperCase();
+    if (ampm === 'PM' && h !== 12) h += 12;
+    if (ampm === 'AM' && h === 12) h = 0;
+    return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
+  };
+
+  // Write fixed staff shifts for a set of date strings to Firestore
+  const seedFixedShiftsForDates = async (dates) => {
+    const DAY_NAMES = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    const batch = writeBatch(db);
+    for (const dateStr of dates) {
+      const d = new Date(dateStr + 'T00:00:00');
+      const jsDay = d.getDay();
+      const pythonWeekday = jsDay === 0 ? 6 : jsDay - 1;
+      const dayName = DAY_NAMES[pythonWeekday];
+      if (!dayName) continue;
+      const weekOfMonth = Math.floor((d.getDate() - 1) / 7) + 1;
+      for (const [name, sched] of Object.entries(FIXED_SCHEDULES)) {
+        const shiftStr = sched[dayName];
+        if (!shiftStr || shiftStr.toLowerCase() === 'off') continue;
+        if (dayName === 'Saturday' && sched.saturday_weeks) {
+          if (!sched.saturday_weeks.includes(weekOfMonth)) continue;
+        }
+        const parts = shiftStr.split(' - ');
+        if (parts.length !== 2) continue;
+        const user = users.find(u => u.displayName?.trim().toLowerCase() === name.toLowerCase());
+        const ref = doc(collection(db, 'shifts'));
+        batch.set(ref, {
+          userId: user?.uid || name,
+          userName: name,
+          date: dateStr,
+          startTime: toHHMM(parts[0]),
+          endTime: toHHMM(parts[1]),
+          role: sched.role,
+          status: 'live',
+          autoScheduled: true,
+          fixedStaff: true,
+        });
+      }
+    }
+    await batch.commit();
+  };
+
+  // Seed fixed staff shifts for the currently viewed week
+  const handleSeedFixedStaffWeek = async () => {
+    const dates = weekDays.map(d => format(d, 'yyyy-MM-dd'));
+    await seedFixedShiftsForDates(dates);
+    alert('✅ Fixed staff shifts added for this week.');
+  };
+
   const handlePostSchedule = async () => {
     if (!draftSchedule) return;
     setPosting(true);
@@ -458,21 +514,39 @@ export default function Admin() {
       const batch = writeBatch(db);
       for (const day of draftSchedule.days) {
         for (const name of day.assignedEmployees) {
+          if (FIXED_SCHEDULES[name]) continue;
           const user = approvedUsers.find(u => u.displayName === name);
           const shiftStr = day.shiftTimes?.[name] || '';
-          const [startTime, endTime] = shiftStr.includes(' - ')
+          const [startRaw, endRaw] = shiftStr.includes(' - ')
             ? shiftStr.split(' - ') : ['15:00', '20:00'];
+          const startTime = startRaw?.includes('M') ? toHHMM(startRaw) : (startRaw || '15:00');
+          const endTime   = endRaw?.includes('M')   ? toHHMM(endRaw)   : (endRaw   || '20:00');
           const ref = doc(collection(db, 'shifts'));
           batch.set(ref, {
             userId: user?.uid || name, userName: name,
-            date: day.date, startTime: startTime || '15:00', endTime: endTime || '20:00',
+            date: day.date, startTime, endTime,
             role: day.roles?.[name] || 'Instructor', status: 'live', autoScheduled: true,
           });
         }
       }
       await batch.commit();
+
+      const allDates = draftSchedule.days.map(d => d.date);
+      await seedFixedShiftsForDates(allDates);
+
+      const totalShifts = draftSchedule.days.reduce((s, d) => s + d.assignedEmployees.length, 0);
+
+      await addDoc(collection(db, 'chat'), {
+        text: `📅 The ${draftSchedule.month} ${draftSchedule.year} schedule has been posted!\n\n${totalShifts} shifts across ${draftSchedule.days.length} working days. Check your schedule on the Schedule page.`,
+        userId: 'system', userName: 'Mathnasium Langley', userRole: 'system',
+        createdAt: serverTimestamp(), type: 'schedule_posted',
+      });
+
+      const staffEmails = approvedUsers.filter(u => u.email).map(u => ({ email: u.email, displayName: u.displayName }));
+      await notifySchedulePosted(draftSchedule, staffEmails);
+
       setDraftSchedule(null);
-      alert(`✅ Schedule posted! ${draftSchedule.days.reduce((s,d) => s + d.assignedEmployees.length, 0)} shifts created.`);
+      alert(`✅ Schedule posted! ${totalShifts} instructor shifts + fixed staff created. Staff notified.`);
     } catch (err) {
       setSchedError(`Failed to post: ${err.message}`);
     } finally {
@@ -563,6 +637,10 @@ export default function Admin() {
               <span className="text-xs text-gray-500">
                 Total assigned: <strong>{Math.round(totalAssignedHours * 10) / 10} hrs</strong>
               </span>
+              <button onClick={handleSeedFixedStaffWeek}
+                className="flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors">
+                <Plus size={12} /> Seed Fixed Staff
+              </button>
             </div>
 
             {/* Grid */}

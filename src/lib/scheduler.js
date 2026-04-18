@@ -118,15 +118,15 @@ function resolveAvailability(availabilityRecords, userId, dateStr, dayName, week
 const FIXED_SCHEDULES = {
   'Jasper Wu': {
     role: 'Center Director',
-    Monday: '11:30 AM - 7:30 PM', Tuesday: '11:30 AM - 7:30 PM',
-    Wednesday: '11:30 AM - 7:30 PM', Thursday: '11:30 AM - 7:30 PM',
-    Friday: '11:30 AM - 6:30 PM', Saturday: 'Off',
+    Monday: '11:00 AM - 7:00 PM', Tuesday: '11:00 AM - 7:00 PM',
+    Wednesday: '11:00 AM - 7:00 PM', Thursday: '11:00 AM - 7:00 PM',
+    Friday: '11:00 AM - 7:00 PM', Saturday: 'Off',
   },
   'Neeru Gill': {
     role: 'Dir. of Education',
-    Monday: '11:30 AM - 7:30 PM', Tuesday: '11:30 AM - 7:30 PM',
-    Wednesday: '11:30 AM - 7:30 PM', Thursday: '11:30 AM - 7:30 PM',
-    Friday: 'Off', Saturday: '9:00 AM - 3:00 PM',
+    Monday: '11:00 AM - 7:00 PM', Tuesday: '11:00 AM - 7:00 PM',
+    Wednesday: '11:00 AM - 7:00 PM', Thursday: '11:00 AM - 7:00 PM',
+    Friday: '11:00 AM - 7:00 PM', Saturday: '9:30 AM - 3:00 PM',
   },
   'Sabrina Kedzior': {
     role: 'Manager',
@@ -150,15 +150,24 @@ const FIXED_SCHEDULES = {
     role: 'Lead',
     Monday: 'Off', Tuesday: '11:00 AM - 7:00 PM',
     Wednesday: 'Off', Thursday: 'Off',
-    Friday: '2:00 PM - 7:00 PM', Saturday: '10:00 AM - 2:00 PM',
+    Friday: '2:00 PM - 7:00 PM', Saturday: '9:30 AM - 3:00 PM',
     saturday_weeks: [1, 3, 5],
+  },
+  'Rahul Parmar': {
+    role: 'Host',
+    Monday: 'Off', Tuesday: 'Off',
+    Wednesday: 'Off', Thursday: 'Off',
+    Friday: 'Off', Saturday: 'Off',
+  },
+  'Rachel Rozelle': {
+    role: 'Admin',
+    Monday: 'Off', Tuesday: 'Off',
+    Wednesday: 'Off', Thursday: 'Off',
+    Friday: 'Off', Saturday: 'Off',
   },
 };
 
-const ROLE_ASSIGNMENTS = {
-  'Rahul Parmar': 'Host',
-  'Rachel Rozelle': 'Admin',
-};
+const ROLE_ASSIGNMENTS = {};
 
 const STAFFING_COUNT_ROLES = new Set(['Instructor', 'Lead']);
 
