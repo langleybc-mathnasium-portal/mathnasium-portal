@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   collection, onSnapshot, doc, updateDoc, deleteDoc,
-  addDoc, query, orderBy, writeBatch,
+  addDoc, query, orderBy, writeBatch, getDocs, where,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
@@ -9,6 +9,7 @@ import {
   Settings, UserCheck, UserX, Trash2, Clock, Tag,
   ChevronLeft, ChevronRight, Table, Wand2, CheckCircle,
   AlertTriangle, Send, RotateCcw, User, Edit3, ArrowRightLeft, Plus, X,
+  DollarSign, Download, CalendarRange,
 } from 'lucide-react';
 import {
   format, startOfWeek, endOfWeek, addWeeks, subWeeks, addDays, isSameDay,
@@ -349,6 +350,16 @@ export default function Admin() {
   const [editingDay, setEditingDay]   = useState(null);
   const [schedError, setSchedError]   = useState('');
 
+  // Payroll state
+  const today = new Date();
+  const defaultPeriod = today.getDate() >= 11 && today.getDate() <= 25
+    ? { start: `${format(today, 'yyyy-MM')}-11`, end: `${format(today, 'yyyy-MM')}-25` }
+    : today.getDate() > 25
+      ? { start: `${format(today, 'yyyy-MM')}-26`, end: format(new Date(today.getFullYear(), today.getMonth() + 1, 10), 'yyyy-MM-dd') }
+      : { start: format(new Date(today.getFullYear(), today.getMonth() - 1, 26), 'yyyy-MM-dd'), end: `${format(new Date(today.getFullYear(), today.getMonth(), 10), 'yyyy-MM')}-10` };
+  const [payStart, setPayStart] = useState(defaultPeriod.start);
+  const [payEnd,   setPayEnd]   = useState(defaultPeriod.end);
+
   // Firestore subscriptions
   useEffect(() => {
     const u1 = onSnapshot(collection(db, 'users'), snap =>
@@ -500,11 +511,25 @@ export default function Admin() {
     await batch.commit();
   };
 
-  // Seed fixed staff shifts for the currently viewed week
+  // Clear ALL fixed staff shifts for a week, then reseed properly
   const handleSeedFixedStaffWeek = async () => {
     const dates = weekDays.map(d => format(d, 'yyyy-MM-dd'));
+    const fixedNames = Object.keys(FIXED_SCHEDULES);
+
+    // Delete existing shifts for fixed staff in this week
+    const deleteBatch = writeBatch(db);
+    let deleteCount = 0;
+    for (const s of shifts) {
+      if (dates.includes(s.date) && fixedNames.some(n => n.toLowerCase() === s.userName?.toLowerCase())) {
+        deleteBatch.delete(doc(db, 'shifts', s.id));
+        deleteCount++;
+      }
+    }
+    if (deleteCount > 0) await deleteBatch.commit();
+
+    // Now seed fresh proper shifts
     await seedFixedShiftsForDates(dates);
-    alert('✅ Fixed staff shifts added for this week.');
+    alert('✅ Fixed staff shifts cleared and reseeded for this week with correct times.');
   };
 
   const handlePostSchedule = async () => {
@@ -564,6 +589,99 @@ export default function Admin() {
     return grouped;
   }, [openShiftsList]);
 
+  // Payroll summary — all shifts in the selected pay period grouped by person
+  const payrollSummary = useMemo(() => {
+    if (!payStart || !payEnd) return [];
+    const periodShifts = shifts.filter(s =>
+      s.date >= payStart && s.date <= payEnd && s.status !== 'draft'
+    );
+
+    // Also include fixed staff from FIXED_SCHEDULES who may not have Firestore shifts yet
+    const byPerson = {};
+
+    // From Firestore shifts
+    for (const s of periodShifts) {
+      const key = s.userName || s.userId;
+      if (!byPerson[key]) {
+        const user = users.find(u => u.displayName === s.userName || u.uid === s.userId);
+        byPerson[key] = {
+          name: s.userName || key,
+          role: s.role || user?.instructorType || 'Instructor',
+          shifts: [],
+          totalHours: 0,
+        };
+      }
+      const hrs = shiftHours(s);
+      byPerson[key].shifts.push({
+        date: s.date,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        hours: hrs,
+        shiftId: s.id,
+      });
+      byPerson[key].totalHours += hrs;
+    }
+
+    // Sort each person's shifts by date
+    for (const key of Object.keys(byPerson)) {
+      byPerson[key].shifts.sort((a, b) => a.date.localeCompare(b.date));
+      byPerson[key].totalHours = Math.round(byPerson[key].totalHours * 100) / 100;
+    }
+
+    // Sort people: by role display order then name
+    const ROLE_ORDER = {
+      'Center Director': 0, 'Dir. of Education': 1, 'Manager': 2,
+      'Lead': 3, 'Host': 4, 'Admin': 5, 'Instructor': 6,
+    };
+    return Object.values(byPerson).sort((a, b) => {
+      const ra = ROLE_ORDER[a.role] ?? 7;
+      const rb = ROLE_ORDER[b.role] ?? 7;
+      if (ra !== rb) return ra - rb;
+      return a.name.localeCompare(b.name);
+    });
+  }, [shifts, users, payStart, payEnd]);
+
+  // Pay period helpers
+  const payPeriodLabel = payStart && payEnd
+    ? `${new Date(payStart + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${new Date(payEnd + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+    : '';
+
+  const totalPayrollHours = payrollSummary.reduce((s, p) => s + p.totalHours, 0);
+
+  // Export to CSV
+  const handleExportPayroll = () => {
+    const fmtTime = (t) => {
+      if (!t) return '';
+      const [hStr, mStr] = t.split(':');
+      let h = parseInt(hStr, 10);
+      const m = parseInt(mStr, 10);
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      if (h > 12) h -= 12;
+      if (h === 0) h = 12;
+      return `${h}:${String(m).padStart(2,'0')} ${ampm}`;
+    };
+
+    const rows = [['Name', 'Role', 'Date', 'Start', 'End', 'Hours']];
+    for (const person of payrollSummary) {
+      for (const s of person.shifts) {
+        const dateLabel = new Date(s.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+        rows.push([person.name, person.role, dateLabel, fmtTime(s.startTime), fmtTime(s.endTime), s.hours.toFixed(2)]);
+      }
+      rows.push([person.name, '', 'TOTAL', '', '', person.totalHours.toFixed(2)]);
+      rows.push([]);
+    }
+    rows.push(['', '', 'GRAND TOTAL', '', '', Math.round(totalPayrollHours * 100) / 100]);
+
+    const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `payroll_${payStart}_to_${payEnd}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   if (profile?.role !== 'owner') {
     return <div className="text-center text-gray-500 py-16">Access denied. Owner only.</div>;
   }
@@ -574,6 +692,7 @@ export default function Admin() {
     { key: 'spreadsheet',  label: 'Scheduler',      icon: Table },
     { key: 'users',        label: 'Manage Users',   icon: UserCheck },
     { key: 'scheduler',    label: 'Auto-Scheduler', icon: Wand2, badge: 'AI', badgeStyle: 'purple' },
+    { key: 'payroll',      label: 'Payroll',        icon: DollarSign },
   ];
 
   return (
@@ -639,7 +758,7 @@ export default function Admin() {
               </span>
               <button onClick={handleSeedFixedStaffWeek}
                 className="flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors">
-                <Plus size={12} /> Seed Fixed Staff
+                <Plus size={12} /> Sync Fixed Staff This Week
               </button>
             </div>
 
@@ -1137,6 +1256,159 @@ export default function Admin() {
                 </button>
               </div>
             </>
+          )}
+        </div>
+      )}
+
+      {/* ── PAYROLL ─────────────────────────────────────────────────────── */}
+      {tab === 'payroll' && (
+        <div className="space-y-6">
+
+          {/* Pay period selector */}
+          <div className="rounded-xl border bg-white p-5 shadow-sm">
+            <div className="flex items-center gap-2 mb-4">
+              <CalendarRange size={18} className="text-green-600" />
+              <h3 className="font-semibold text-gray-900">Select Pay Period</h3>
+            </div>
+            <div className="flex flex-wrap items-end gap-4">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Start Date</label>
+                <input type="date" value={payStart} onChange={e => setPayStart(e.target.value)}
+                  className="rounded-lg border px-3 py-2 text-sm focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-500/20" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">End Date</label>
+                <input type="date" value={payEnd} onChange={e => setPayEnd(e.target.value)}
+                  className="rounded-lg border px-3 py-2 text-sm focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-500/20" />
+              </div>
+              {/* Quick select buttons */}
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { label: '11th – 25th', fn: () => {
+                    const y = today.getMonth() === 0 && today.getDate() < 11 ? today.getFullYear() - 1 : today.getFullYear();
+                    const m = String(today.getMonth() + 1).padStart(2,'0');
+                    setPayStart(`${y}-${m}-11`); setPayEnd(`${y}-${m}-25`);
+                  }},
+                  { label: '26th – 10th', fn: () => {
+                    const start = new Date(today.getFullYear(), today.getMonth(), 26);
+                    const end   = new Date(today.getFullYear(), today.getMonth() + 1, 10);
+                    setPayStart(format(start, 'yyyy-MM-dd')); setPayEnd(format(end, 'yyyy-MM-dd'));
+                  }},
+                ].map(q => (
+                  <button key={q.label} onClick={q.fn}
+                    className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs font-medium text-green-700 hover:bg-green-100 transition-colors">
+                    {q.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Summary bar */}
+            {payrollSummary.length > 0 && (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-gray-50 px-4 py-3">
+                <div className="flex flex-wrap gap-6 text-sm">
+                  <div>
+                    <span className="text-gray-500">Pay period: </span>
+                    <span className="font-semibold text-gray-800">{payPeriodLabel}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Staff: </span>
+                    <span className="font-semibold text-gray-800">{payrollSummary.length}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Total shifts: </span>
+                    <span className="font-semibold text-gray-800">{payrollSummary.reduce((s,p) => s + p.shifts.length, 0)}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Total hours: </span>
+                    <span className="font-bold text-green-700">{Math.round(totalPayrollHours * 100) / 100}h</span>
+                  </div>
+                </div>
+                <button onClick={handleExportPayroll}
+                  className="flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-green-700 transition-colors">
+                  <Download size={15} /> Export CSV
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Per-person breakdown */}
+          {payrollSummary.length === 0 ? (
+            <div className="rounded-xl border bg-white p-10 text-center shadow-sm">
+              <DollarSign size={36} className="mx-auto mb-3 text-gray-300" />
+              <p className="text-gray-500 font-medium">No shifts found for this pay period.</p>
+              <p className="text-sm text-gray-400 mt-1">Make sure shifts are posted and the date range is correct.</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {payrollSummary.map(person => {
+                const { bg } = roleColor(person.role);
+                return (
+                  <div key={person.name} className="rounded-xl border bg-white shadow-sm overflow-hidden">
+                    {/* Person header */}
+                    <div className="flex items-center justify-between px-5 py-3 border-b bg-gray-50">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white"
+                          style={{ backgroundColor: bg }}>
+                          {person.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0,2)}
+                        </div>
+                        <div>
+                          <span className="font-semibold text-gray-900">{person.name}</span>
+                          <span className="ml-2 text-xs text-gray-500">{person.role}</span>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-sm font-bold text-green-700">{person.totalHours.toFixed(2)}h total</div>
+                        <div className="text-xs text-gray-400">{person.shifts.length} shift{person.shifts.length !== 1 ? 's' : ''}</div>
+                      </div>
+                    </div>
+
+                    {/* Shift rows */}
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b bg-white">
+                          <th className="text-left px-5 py-2 text-xs font-medium text-gray-500 w-48">Date</th>
+                          <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 w-28">Start</th>
+                          <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 w-28">End</th>
+                          <th className="text-right px-5 py-2 text-xs font-medium text-gray-500">Hours</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-50">
+                        {person.shifts.map((s, i) => {
+                          const fmtT = (t) => {
+                            if (!t) return '–';
+                            const [hStr, mStr] = t.split(':');
+                            let h = parseInt(hStr, 10);
+                            const m = parseInt(mStr, 10);
+                            const ampm = h >= 12 ? 'PM' : 'AM';
+                            if (h > 12) h -= 12;
+                            if (h === 0) h = 12;
+                            return `${h}:${String(m).padStart(2,'0')} ${ampm}`;
+                          };
+                          const dateLabel = new Date(s.date + 'T00:00:00').toLocaleDateString('en-US', {
+                            weekday: 'short', month: 'short', day: 'numeric',
+                          });
+                          return (
+                            <tr key={i} className="hover:bg-gray-50 transition-colors">
+                              <td className="px-5 py-2.5 text-gray-800 font-medium">{dateLabel}</td>
+                              <td className="px-4 py-2.5 text-gray-600">{fmtT(s.startTime)}</td>
+                              <td className="px-4 py-2.5 text-gray-600">{fmtT(s.endTime)}</td>
+                              <td className="px-5 py-2.5 text-right font-semibold text-gray-800">{s.hours.toFixed(2)}h</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t bg-green-50">
+                          <td colSpan={3} className="px-5 py-2 text-sm font-semibold text-green-800">Total</td>
+                          <td className="px-5 py-2 text-right text-sm font-bold text-green-800">{person.totalHours.toFixed(2)}h</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       )}
