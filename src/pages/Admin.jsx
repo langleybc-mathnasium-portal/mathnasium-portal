@@ -550,7 +550,20 @@ export default function Admin() {
     alert(`✅ Purged ${toDelete.length} old fixed staff shifts and reseeded this week.`);
   };
 
-  const handlePostSchedule = async () => {
+  // Reset ALL shifts in Firestore — complete clean slate
+  const handleResetAllShifts = async () => {
+    if (!confirm('⚠️ This will permanently delete EVERY shift from Firestore for ALL staff. This cannot be undone. Are you sure?')) return;
+    if (!confirm('Last chance — delete all shifts?')) return;
+    const CHUNK = 490;
+    for (let i = 0; i < shifts.length; i += CHUNK) {
+      const b = writeBatch(db);
+      shifts.slice(i, i + CHUNK).forEach(s => b.delete(doc(db, 'shifts', s.id)));
+      await b.commit();
+    }
+    alert(`✅ All ${shifts.length} shifts deleted. Fresh start!`);
+  };
+
+
     if (!draftSchedule) return;
     setPosting(true);
     try {
@@ -783,6 +796,11 @@ export default function Admin() {
                 className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 transition-colors">
                 <RotateCcw size={12} /> Fix Duplicates
               </button>
+              <button onClick={handleResetAllShifts}
+                title="Wipe every shift from Firestore — complete fresh start"
+                className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-500 hover:bg-red-50 hover:border-red-300 hover:text-red-600 transition-colors">
+                <Trash2 size={12} /> Reset All Shifts
+              </button>
             </div>
 
             {/* Grid */}
@@ -794,13 +812,9 @@ export default function Admin() {
                     {weekDays.map(d => {
                       const isToday = isSameDay(d, new Date());
                       const ds = format(d, 'yyyy-MM-dd');
-                      const dayName = format(d, 'EEEE'); // 'Monday', 'Tuesday' etc
-                      const weekOfMonth = Math.floor((d.getDate() - 1) / 7) + 1;
-                      const firestoreHrs = shifts
+                      const dayTotalHrs = shifts
                         .filter(s => s.date === ds && s.status !== 'draft')
                         .reduce((sum, s) => sum + shiftHours(s), 0);
-                      const fixedHrs = fixedStaffHoursForDay(dayName, weekOfMonth);
-                      const dayTotalHrs = firestoreHrs + fixedHrs;
                       const dayHrsDisplay = isNaN(dayTotalHrs) ? 0 : Math.round(dayTotalHrs * 10) / 10;
                       return (
                         <th key={d.toISOString()} className={`text-center py-2 px-1 font-medium w-[13%] ${isToday ? 'bg-red-50 text-red-700' : 'text-gray-600'}`}>
@@ -929,17 +943,13 @@ export default function Admin() {
                     <td className="px-4 py-2 border-r text-xs font-semibold text-gray-600">Day Totals</td>
                     {weekDays.map(d => {
                       const ds = format(d, 'yyyy-MM-dd');
-                      const dayName = format(d, 'EEEE');
-                      const weekOfMonth = Math.floor((d.getDate() - 1) / 7) + 1;
                       const dayShiftsAll = shifts.filter(s => s.date === ds && s.status !== 'draft');
                       const count = dayShiftsAll.length;
-                      const firestoreHrs = dayShiftsAll.reduce((sum, s) => sum + shiftHours(s), 0);
-                      const fixedHrs = fixedStaffHoursForDay(dayName, weekOfMonth);
-                      const hrs = firestoreHrs + fixedHrs;
+                      const hrs = dayShiftsAll.reduce((sum, s) => sum + shiftHours(s), 0);
                       const hrsDisplay = isNaN(hrs) ? 0 : Math.round(hrs * 10) / 10;
                       return (
                         <td key={ds} className="text-center py-2 text-xs text-gray-500">
-                          {count > 0 || fixedHrs > 0 ? (
+                          {count > 0 ? (
                             <div>
                               <span className="font-semibold text-gray-700">{count} staff</span>
                               <div className="text-purple-600 font-semibold">{hrsDisplay}h total</div>
