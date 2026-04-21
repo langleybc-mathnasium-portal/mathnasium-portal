@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   collection, onSnapshot, doc, updateDoc, deleteDoc,
-  addDoc, query, orderBy, writeBatch, getDocs, where,
+  addDoc, query, orderBy, writeBatch,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
