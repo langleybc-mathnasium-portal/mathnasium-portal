@@ -477,7 +477,21 @@ export default function Admin() {
   // Write fixed staff shifts for a set of date strings to Firestore
   const seedFixedShiftsForDates = async (dates) => {
     const DAY_NAMES = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-    const batch = writeBatch(db);
+    const fixedNames = Object.keys(FIXED_SCHEDULES).map(n => n.toLowerCase());
+
+    // Step 1: Delete ALL existing fixed staff shifts for these dates (prevents duplicates)
+    const deleteBatch = writeBatch(db);
+    let deleteCount = 0;
+    for (const s of shifts) {
+      if (dates.includes(s.date) && fixedNames.includes(s.userName?.toLowerCase())) {
+        deleteBatch.delete(doc(db, 'shifts', s.id));
+        deleteCount++;
+      }
+    }
+    if (deleteCount > 0) await deleteBatch.commit();
+
+    // Step 2: Write fresh shifts
+    const insertBatch = writeBatch(db);
     for (const dateStr of dates) {
       const d = new Date(dateStr + 'T00:00:00');
       const jsDay = d.getDay();
@@ -495,7 +509,7 @@ export default function Admin() {
         if (parts.length !== 2) continue;
         const user = users.find(u => u.displayName?.trim().toLowerCase() === name.toLowerCase());
         const ref = doc(collection(db, 'shifts'));
-        batch.set(ref, {
+        insertBatch.set(ref, {
           userId: user?.uid || name,
           userName: name,
           date: dateStr,
@@ -508,28 +522,32 @@ export default function Admin() {
         });
       }
     }
-    await batch.commit();
+    await insertBatch.commit();
   };
 
   // Clear ALL fixed staff shifts for a week, then reseed properly
   const handleSeedFixedStaffWeek = async () => {
     const dates = weekDays.map(d => format(d, 'yyyy-MM-dd'));
-    const fixedNames = Object.keys(FIXED_SCHEDULES);
-
-    // Delete existing shifts for fixed staff in this week
-    const deleteBatch = writeBatch(db);
-    let deleteCount = 0;
-    for (const s of shifts) {
-      if (dates.includes(s.date) && fixedNames.some(n => n.toLowerCase() === s.userName?.toLowerCase())) {
-        deleteBatch.delete(doc(db, 'shifts', s.id));
-        deleteCount++;
-      }
-    }
-    if (deleteCount > 0) await deleteBatch.commit();
-
-    // Now seed fresh proper shifts
     await seedFixedShiftsForDates(dates);
-    alert('✅ Fixed staff shifts cleared and reseeded for this week with correct times.');
+    alert('✅ Fixed staff shifts synced for this week with correct times.');
+  };
+
+  // One-time cleanup: delete ALL fixed staff shifts across all dates, then reseed the current week
+  const handlePurgeAndReseed = async () => {
+    if (!confirm('This will delete ALL fixed staff shifts from Firestore and reseed the current week fresh. Continue?')) return;
+    const fixedNames = Object.keys(FIXED_SCHEDULES).map(n => n.toLowerCase());
+    // Delete in chunks of 500 (Firestore batch limit)
+    const toDelete = shifts.filter(s => fixedNames.includes(s.userName?.toLowerCase()));
+    const CHUNK = 490;
+    for (let i = 0; i < toDelete.length; i += CHUNK) {
+      const b = writeBatch(db);
+      toDelete.slice(i, i + CHUNK).forEach(s => b.delete(doc(db, 'shifts', s.id)));
+      await b.commit();
+    }
+    // Reseed current week
+    const dates = weekDays.map(d => format(d, 'yyyy-MM-dd'));
+    await seedFixedShiftsForDates(dates);
+    alert(`✅ Purged ${toDelete.length} old fixed staff shifts and reseeded this week.`);
   };
 
   const handlePostSchedule = async () => {
@@ -759,6 +777,11 @@ export default function Admin() {
               <button onClick={handleSeedFixedStaffWeek}
                 className="flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors">
                 <Plus size={12} /> Sync Fixed Staff This Week
+              </button>
+              <button onClick={handlePurgeAndReseed}
+                title="Delete all fixed staff shifts and reseed this week — use once to fix duplicates"
+                className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 transition-colors">
+                <RotateCcw size={12} /> Fix Duplicates
               </button>
             </div>
 
