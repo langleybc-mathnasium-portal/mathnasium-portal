@@ -126,7 +126,7 @@ const FIXED_SCHEDULES = {
     role: 'Dir. of Education',
     Monday: '11:00 AM - 7:00 PM', Tuesday: '11:00 AM - 7:00 PM',
     Wednesday: '11:00 AM - 7:00 PM', Thursday: '11:00 AM - 7:00 PM',
-    Friday: '11:00 AM - 7:00 PM', Saturday: '9:30 AM - 3:00 PM',
+    Friday: 'Off', Saturday: '9:00 AM - 3:00 PM',
   },
   'Sabrina Kedzior': {
     role: 'Manager',
