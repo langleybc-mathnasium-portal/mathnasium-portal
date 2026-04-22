@@ -373,7 +373,12 @@ export default function Admin() {
     return () => { u1(); u2(); u3(); u4(); };
   }, []);
 
-  const approvedUsers = users.filter(u => u.approved && u.role !== 'owner');
+  const approvedUsers = users
+    .filter(u => u.approved && u.role !== 'owner')
+    .sort((a, b) => {
+      const firstName = name => (name || '').split(' ')[0].toLowerCase();
+      return firstName(a.displayName).localeCompare(firstName(b.displayName));
+    });
   const pendingUsers  = users.filter(u => !u.approved);
 
   // User management
