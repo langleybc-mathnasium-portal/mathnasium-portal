@@ -359,6 +359,9 @@ export default function Admin() {
       : { start: format(new Date(today.getFullYear(), today.getMonth() - 1, 26), 'yyyy-MM-dd'), end: `${format(new Date(today.getFullYear(), today.getMonth(), 10), 'yyyy-MM')}-10` };
   const [payStart, setPayStart] = useState(defaultPeriod.start);
   const [payEnd,   setPayEnd]   = useState(defaultPeriod.end);
+  const [radiusData, setRadiusData] = useState([]); // parsed Radius timesheet rows
+  const [radiusFileName, setRadiusFileName] = useState('');
+  const [radiusError, setRadiusError] = useState('');
 
   // Firestore subscriptions
   useEffect(() => {
@@ -717,6 +720,94 @@ export default function Admin() {
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  // Parse Radius XLSX export using SheetJS
+  const handleRadiusImport = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setRadiusError('');
+    setRadiusFileName(file.name);
+    try {
+      const XLSX = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.mjs');
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+      const parsed = [];
+      for (const row of rows) {
+        const name = String(row[2] || '').trim();
+        const dateRaw = row[4];
+        const timeIn  = String(row[5] || '').trim();
+        const timeOut = String(row[6] || '').trim();
+        const durationHours = parseFloat(row[8]);
+
+        if (!name || !dateRaw || name === 'Employee Name') continue;
+        if (isNaN(durationHours)) continue; // skip header/total rows
+
+        // Parse DD/MM/YYYY date from Radius
+        let dateStr = '';
+        if (typeof dateRaw === 'string' && dateRaw.includes('/')) {
+          const [d, m, y] = dateRaw.split('/');
+          dateStr = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        } else if (dateRaw instanceof Date) {
+          dateStr = dateRaw.toISOString().split('T')[0];
+        } else {
+          continue;
+        }
+
+        parsed.push({ name, date: dateStr, timeIn, timeOut, actualHours: durationHours });
+      }
+      setRadiusData(parsed);
+    } catch (err) {
+      setRadiusError('Failed to parse file. Make sure it is the Radius Excel export.');
+      console.error(err);
+    }
+    e.target.value = '';
+  };
+
+  // Build comparison: for each person in payroll, match Radius rows
+  const comparisonSummary = useMemo(() => {
+    if (radiusData.length === 0) return null;
+    return payrollSummary.map(person => {
+      // Fuzzy name match — Radius uses "First Last", portal uses "First Last"
+      const radiusRows = radiusData.filter(r =>
+        r.name.toLowerCase().trim() === person.name.toLowerCase().trim()
+      );
+      const actualHours = radiusRows.reduce((s, r) => s + r.actualHours, 0);
+      const scheduledHours = person.totalHours;
+      const diff = Math.round((actualHours - scheduledHours) * 100) / 100;
+      const hasDiscrepancy = Math.abs(diff) > 0.25; // >15 min difference flags it
+
+      // Per-shift comparison
+      const shiftComparisons = person.shifts.map(s => {
+        const match = radiusRows.find(r => r.date === s.date);
+        const shiftDiff = match ? Math.round((match.actualHours - s.hours) * 100) / 100 : null;
+        return {
+          ...s,
+          actual: match || null,
+          shiftDiff,
+          shiftDiscrepancy: match ? Math.abs(shiftDiff) > 0.25 : false,
+          missingFromRadius: !match,
+        };
+      });
+
+      // Radius entries with no matching scheduled shift
+      const unmatchedRadius = radiusRows.filter(r =>
+        !person.shifts.find(s => s.date === r.date)
+      );
+
+      return {
+        ...person,
+        actualHours: Math.round(actualHours * 100) / 100,
+        scheduledHours,
+        diff,
+        hasDiscrepancy,
+        shiftComparisons,
+        unmatchedRadius,
+      };
+    });
+  }, [payrollSummary, radiusData]);
 
   if (profile?.role !== 'owner') {
     return <div className="text-center text-gray-500 py-16">Access denied. Owner only.</div>;
@@ -1370,7 +1461,39 @@ export default function Admin() {
             )}
           </div>
 
-          {/* Per-person breakdown */}
+          {/* Radius Import */}
+          {payrollSummary.length > 0 && (
+            <div className="rounded-xl border bg-white p-5 shadow-sm">
+              <div className="flex items-center gap-2 mb-1">
+                <div className="w-2 h-2 rounded-full bg-blue-500" />
+                <h3 className="font-semibold text-gray-900">Radius Timesheet Import</h3>
+                {radiusData.length > 0 && (
+                  <span className="ml-2 rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-medium text-blue-700">
+                    {radiusData.length} entries loaded
+                  </span>
+                )}
+              </div>
+              <p className="text-sm text-gray-500 mb-4">
+                Upload the Radius Excel export for this pay period. The portal will compare actual sign-in/out times against scheduled shifts and flag any discrepancies.
+              </p>
+              <label className="flex items-center gap-3 cursor-pointer w-fit">
+                <div className="flex items-center gap-2 rounded-lg border-2 border-dashed border-blue-300 bg-blue-50 px-4 py-2.5 text-sm font-medium text-blue-700 hover:bg-blue-100 transition-colors">
+                  <Download size={15} className="rotate-180" />
+                  {radiusFileName ? `Loaded: ${radiusFileName}` : 'Upload Radius Export (.xlsx)'}
+                </div>
+                <input type="file" accept=".xlsx" onChange={handleRadiusImport} className="hidden" />
+              </label>
+              {radiusError && <p className="mt-2 text-sm text-red-600">{radiusError}</p>}
+              {radiusData.length > 0 && (
+                <button onClick={() => { setRadiusData([]); setRadiusFileName(''); }}
+                  className="mt-2 text-xs text-gray-400 hover:text-red-500">
+                  Clear Radius data
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Per-person breakdown — with Radius comparison if loaded */}
           {payrollSummary.length === 0 ? (
             <div className="rounded-xl border bg-white p-10 text-center shadow-sm">
               <DollarSign size={36} className="mx-auto mb-3 text-gray-300" />
@@ -1379,12 +1502,15 @@ export default function Admin() {
             </div>
           ) : (
             <div className="space-y-4">
-              {payrollSummary.map(person => {
+              {(comparisonSummary || payrollSummary).map(person => {
                 const { bg } = roleColor(person.role);
+                const hasRadius = !!comparisonSummary;
+                const isDiscrepant = hasRadius && person.hasDiscrepancy;
+                const shiftRows = hasRadius ? person.shiftComparisons : person.shifts;
                 return (
-                  <div key={person.name} className="rounded-xl border bg-white shadow-sm overflow-hidden">
+                  <div key={person.name} className={`rounded-xl border shadow-sm overflow-hidden bg-white ${isDiscrepant ? 'border-red-300' : ''}`}>
                     {/* Person header */}
-                    <div className="flex items-center justify-between px-5 py-3 border-b bg-gray-50">
+                    <div className={`flex items-center justify-between px-5 py-3 border-b ${isDiscrepant ? 'bg-red-50' : 'bg-gray-50'}`}>
                       <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white"
                           style={{ backgroundColor: bg }}>
@@ -1393,11 +1519,29 @@ export default function Admin() {
                         <div>
                           <span className="font-semibold text-gray-900">{person.name}</span>
                           <span className="ml-2 text-xs text-gray-500">{person.role}</span>
+                          {isDiscrepant && (
+                            <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">⚠ Discrepancy</span>
+                          )}
                         </div>
                       </div>
                       <div className="text-right">
-                        <div className="text-sm font-bold text-green-700">{person.totalHours.toFixed(2)}h total</div>
-                        <div className="text-xs text-gray-400">{person.shifts.length} shift{person.shifts.length !== 1 ? 's' : ''}</div>
+                        {hasRadius ? (
+                          <>
+                            <div className="text-xs text-gray-500">
+                              Scheduled: <span className="font-semibold text-gray-800">{person.scheduledHours.toFixed(2)}h</span>
+                              <span className="mx-1.5 text-gray-300">·</span>
+                              Actual: <span className="font-semibold text-blue-700">{person.actualHours.toFixed(2)}h</span>
+                            </div>
+                            <div className={`text-sm font-bold ${isDiscrepant ? 'text-red-600' : 'text-green-600'}`}>
+                              {person.diff > 0 ? '+' : ''}{person.diff.toFixed(2)}h {isDiscrepant ? '← investigate' : '✓ match'}
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="text-sm font-bold text-green-700">{person.totalHours.toFixed(2)}h total</div>
+                            <div className="text-xs text-gray-400">{person.shifts.length} shift{person.shifts.length !== 1 ? 's' : ''}</div>
+                          </>
+                        )}
                       </div>
                     </div>
 
@@ -1405,14 +1549,16 @@ export default function Admin() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b bg-white">
-                          <th className="text-left px-5 py-2 text-xs font-medium text-gray-500 w-48">Date</th>
-                          <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 w-28">Start</th>
-                          <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 w-28">End</th>
-                          <th className="text-right px-5 py-2 text-xs font-medium text-gray-500">Hours</th>
+                          <th className="text-left px-5 py-2 text-xs font-medium text-gray-500 w-40">Date</th>
+                          <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Scheduled</th>
+                          {hasRadius && <th className="text-left px-4 py-2 text-xs font-medium text-blue-500">Radius Actual</th>}
+                          <th className="text-right px-5 py-2 text-xs font-medium text-gray-500">{hasRadius ? 'Sched. h' : 'Hours'}</th>
+                          {hasRadius && <th className="text-right px-5 py-2 text-xs font-medium text-blue-500">Actual h</th>}
+                          {hasRadius && <th className="text-right px-5 py-2 text-xs font-medium text-gray-500">Diff</th>}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-50">
-                        {person.shifts.map((s, i) => {
+                        {shiftRows.map((s, i) => {
                           const fmtT = (t) => {
                             if (!t) return '–';
                             const [hStr, mStr] = t.split(':');
@@ -1426,20 +1572,55 @@ export default function Admin() {
                           const dateLabel = new Date(s.date + 'T00:00:00').toLocaleDateString('en-US', {
                             weekday: 'short', month: 'short', day: 'numeric',
                           });
+                          const rowFlag = hasRadius && (s.shiftDiscrepancy || s.missingFromRadius);
                           return (
-                            <tr key={i} className="hover:bg-gray-50 transition-colors">
+                            <tr key={i} className={`transition-colors ${rowFlag ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-gray-50'}`}>
                               <td className="px-5 py-2.5 text-gray-800 font-medium">{dateLabel}</td>
-                              <td className="px-4 py-2.5 text-gray-600">{fmtT(s.startTime)}</td>
-                              <td className="px-4 py-2.5 text-gray-600">{fmtT(s.endTime)}</td>
+                              <td className="px-4 py-2.5 text-gray-600 text-xs">{fmtT(s.startTime)} – {fmtT(s.endTime)}</td>
+                              {hasRadius && (
+                                <td className="px-4 py-2.5 text-xs">
+                                  {s.missingFromRadius
+                                    ? <span className="text-red-500 font-medium">Not in Radius</span>
+                                    : <span className="text-blue-700">{s.actual.timeIn} – {s.actual.timeOut}</span>}
+                                </td>
+                              )}
                               <td className="px-5 py-2.5 text-right font-semibold text-gray-800">{s.hours.toFixed(2)}h</td>
+                              {hasRadius && (
+                                <td className="px-5 py-2.5 text-right font-semibold text-blue-700">
+                                  {s.missingFromRadius ? '–' : `${s.actual.actualHours.toFixed(2)}h`}
+                                </td>
+                              )}
+                              {hasRadius && (
+                                <td className={`px-5 py-2.5 text-right font-bold text-xs ${s.missingFromRadius ? 'text-red-500' : s.shiftDiscrepancy ? 'text-red-600' : 'text-green-600'}`}>
+                                  {s.missingFromRadius ? '⚠ missing' : s.shiftDiff > 0 ? `+${s.shiftDiff.toFixed(2)}h` : `${s.shiftDiff.toFixed(2)}h`}
+                                </td>
+                              )}
                             </tr>
                           );
                         })}
+                        {hasRadius && person.unmatchedRadius?.map((r, i) => (
+                          <tr key={`ur-${i}`} className="bg-amber-50 hover:bg-amber-100 transition-colors">
+                            <td className="px-5 py-2.5 text-gray-800 font-medium">
+                              {new Date(r.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                            </td>
+                            <td className="px-4 py-2.5 text-xs text-amber-600 font-medium">Not scheduled</td>
+                            <td className="px-4 py-2.5 text-xs text-blue-700">{r.timeIn} – {r.timeOut}</td>
+                            <td className="px-5 py-2.5 text-right text-gray-400">–</td>
+                            <td className="px-5 py-2.5 text-right font-semibold text-blue-700">{r.actualHours.toFixed(2)}h</td>
+                            <td className="px-5 py-2.5 text-right text-xs font-bold text-amber-600">⚠ unscheduled</td>
+                          </tr>
+                        ))}
                       </tbody>
                       <tfoot>
-                        <tr className="border-t bg-green-50">
-                          <td colSpan={3} className="px-5 py-2 text-sm font-semibold text-green-800">Total</td>
-                          <td className="px-5 py-2 text-right text-sm font-bold text-green-800">{person.totalHours.toFixed(2)}h</td>
+                        <tr className={`border-t ${isDiscrepant ? 'bg-red-50' : 'bg-green-50'}`}>
+                          <td colSpan={hasRadius ? 3 : 3} className={`px-5 py-2 text-sm font-semibold ${isDiscrepant ? 'text-red-800' : 'text-green-800'}`}>Total</td>
+                          <td className={`px-5 py-2 text-right text-sm font-bold ${isDiscrepant ? 'text-red-800' : 'text-green-800'}`}>{person.totalHours.toFixed(2)}h</td>
+                          {hasRadius && <td className="px-5 py-2 text-right text-sm font-bold text-blue-700">{person.actualHours.toFixed(2)}h</td>}
+                          {hasRadius && (
+                            <td className={`px-5 py-2 text-right text-sm font-bold ${isDiscrepant ? 'text-red-600' : 'text-green-600'}`}>
+                              {person.diff > 0 ? '+' : ''}{person.diff.toFixed(2)}h
+                            </td>
+                          )}
                         </tr>
                       </tfoot>
                     </table>
