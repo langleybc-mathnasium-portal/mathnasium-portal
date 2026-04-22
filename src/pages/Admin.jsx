@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   collection, onSnapshot, doc, updateDoc, deleteDoc,
-  addDoc, query, orderBy, writeBatch,
+  addDoc, query, orderBy, writeBatch, getDocs, where,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
@@ -563,7 +563,7 @@ export default function Admin() {
     alert(`✅ All ${shifts.length} shifts deleted. Fresh start!`);
   };
 
-
+  const handlePostSchedule = async () => {
     if (!draftSchedule) return;
     setPosting(true);
     try {
