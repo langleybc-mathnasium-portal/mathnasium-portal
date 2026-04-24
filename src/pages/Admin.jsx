@@ -721,23 +721,32 @@ export default function Admin() {
     URL.revokeObjectURL(url);
   };
 
-  // Parse Radius XLSX export using SheetJS
+  // Parse Radius XLSX export — loads xlsx via script tag (no npm needed)
   const handleRadiusImport = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setRadiusError('');
     setRadiusFileName(file.name);
+
     try {
-      const XLSX = await import('xlsx');
+      // Dynamically load SheetJS from CDN if not already loaded
+      if (!window.XLSX) {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+          script.onload = resolve;
+          script.onerror = reject;
+          document.head.appendChild(script);
+        });
+      }
+
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array' });
+      const wb = window.XLSX.read(buf, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
-      // raw: true keeps everything as-is, no date coercion
-      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+      const rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
 
       const parsed = [];
       for (const row of rows) {
-        // Data rows: col0=blank, col1=attendanceId(number), col2=name, col3=empId, col4=date, col5=timeIn, col6=timeOut, col7=durationMin, col8=durationHours
         const attendanceId = row[1];
         const name = String(row[2] || '').trim();
         const dateRaw = String(row[4] || '').trim();
@@ -745,21 +754,16 @@ export default function Admin() {
         const timeOut = String(row[6] || '').trim();
         const durationHours = parseFloat(row[8]);
 
-        // Only process real data rows: must have numeric attendanceId, valid name, and valid hours
         if (!name || name === 'Employee Name') continue;
         if (typeof attendanceId !== 'number' || isNaN(attendanceId)) continue;
         if (!dateRaw || isNaN(durationHours)) continue;
 
         // Parse DD/MM/YYYY → YYYY-MM-DD
-        let dateStr = '';
-        if (dateRaw.includes('/')) {
-          const parts = dateRaw.split('/');
-          if (parts.length === 3) {
-            const [d, m, y] = parts;
-            dateStr = `${y.trim()}-${String(m.trim()).padStart(2,'0')}-${String(d.trim()).padStart(2,'0')}`;
-          }
-        }
-        if (!dateStr) continue;
+        if (!dateRaw.includes('/')) continue;
+        const parts = dateRaw.split('/');
+        if (parts.length !== 3) continue;
+        const [d, m, y] = parts;
+        const dateStr = `${y.trim()}-${String(m.trim()).padStart(2,'0')}-${String(d.trim()).padStart(2,'0')}`;
 
         parsed.push({ name, date: dateStr, timeIn, timeOut, actualHours: durationHours });
       }
