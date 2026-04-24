@@ -730,33 +730,43 @@ export default function Admin() {
     try {
       const XLSX = await import('xlsx');
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+      const wb = XLSX.read(buf, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      // raw: true keeps everything as-is, no date coercion
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
 
       const parsed = [];
       for (const row of rows) {
+        // Data rows: col0=blank, col1=attendanceId(number), col2=name, col3=empId, col4=date, col5=timeIn, col6=timeOut, col7=durationMin, col8=durationHours
+        const attendanceId = row[1];
         const name = String(row[2] || '').trim();
-        const dateRaw = row[4];
+        const dateRaw = String(row[4] || '').trim();
         const timeIn  = String(row[5] || '').trim();
         const timeOut = String(row[6] || '').trim();
         const durationHours = parseFloat(row[8]);
 
-        if (!name || !dateRaw || name === 'Employee Name') continue;
-        if (isNaN(durationHours)) continue; // skip header/total rows
+        // Only process real data rows: must have numeric attendanceId, valid name, and valid hours
+        if (!name || name === 'Employee Name') continue;
+        if (typeof attendanceId !== 'number' || isNaN(attendanceId)) continue;
+        if (!dateRaw || isNaN(durationHours)) continue;
 
-        // Parse DD/MM/YYYY date from Radius
+        // Parse DD/MM/YYYY → YYYY-MM-DD
         let dateStr = '';
-        if (typeof dateRaw === 'string' && dateRaw.includes('/')) {
-          const [d, m, y] = dateRaw.split('/');
-          dateStr = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-        } else if (dateRaw instanceof Date) {
-          dateStr = dateRaw.toISOString().split('T')[0];
-        } else {
-          continue;
+        if (dateRaw.includes('/')) {
+          const parts = dateRaw.split('/');
+          if (parts.length === 3) {
+            const [d, m, y] = parts;
+            dateStr = `${y.trim()}-${String(m.trim()).padStart(2,'0')}-${String(d.trim()).padStart(2,'0')}`;
+          }
         }
+        if (!dateStr) continue;
 
         parsed.push({ name, date: dateStr, timeIn, timeOut, actualHours: durationHours });
+      }
+
+      if (parsed.length === 0) {
+        setRadiusError('No valid entries found. Make sure this is the Radius Employee Timesheet export.');
+        return;
       }
       setRadiusData(parsed);
     } catch (err) {
