@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   collection, onSnapshot, doc, updateDoc, deleteDoc,
-  addDoc, query, orderBy, writeBatch, getDocs, where,
+  addDoc, query, orderBy, writeBatch,
 } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, serverTimestamp } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import {
   Settings, UserCheck, UserX, Trash2, Clock, Tag,
@@ -13,7 +13,6 @@ import {
 } from 'lucide-react';
 import {
   format, startOfWeek, endOfWeek, addWeeks, subWeeks, addDays, isSameDay,
-  addMonths, subMonths,
 } from 'date-fns';
 import { generateSchedule, FIXED_SCHEDULES } from '../lib/scheduler';
 
@@ -443,7 +442,7 @@ export default function Admin() {
       // Build a set of "userId-date" pairs that are approved time off
       const approvedTimeOff = new Set();
       timeOffRequests
-        .filter(r => r.status === 'approved')
+        .filter(r => r.status === 'approved' && r.startDate && r.endDate)
         .forEach(r => {
           let d = new Date(r.startDate + 'T00:00:00');
           const end = new Date(r.endDate + 'T00:00:00');
@@ -1704,6 +1703,7 @@ export default function Admin() {
           ) : (
             <div className="space-y-3">
               {timeOffRequests.map(req => {
+                if (!req.startDate || !req.endDate) return null;
                 const startLabel = new Date(req.startDate + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
                 const endLabel   = new Date(req.endDate   + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
                 const sameDay    = req.startDate === req.endDate;

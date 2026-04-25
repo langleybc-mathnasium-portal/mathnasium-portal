@@ -1,17 +1,17 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   collection, addDoc, deleteDoc, doc, onSnapshot,
-  updateDoc,
+  query, orderBy, updateDoc,
 } from 'firebase/firestore';
 import { db, serverTimestamp } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import {
-  CalendarDays, ChevronLeft, ChevronRight, Clock,
+  CalendarDays, ChevronLeft, ChevronRight,
   ArrowRightLeft, Plus, X, Check, AlertTriangle, Briefcase,
 } from 'lucide-react';
 import {
   format, startOfMonth, endOfMonth, eachDayOfInterval,
-  getDay, addMonths, subMonths, isSameDay, isSameMonth,
+  getDay, addMonths, subMonths, isSameMonth,
 } from 'date-fns';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -245,7 +245,7 @@ export default function Schedule() {
   const myTimeOffDates = useMemo(() => {
     const dates = new Set();
     timeOffRequests
-      .filter(r => r.userId === profile?.uid && r.status !== 'denied')
+      .filter(r => r.userId === profile?.uid && r.status !== 'denied' && r.startDate && r.endDate)
       .forEach(r => {
         let d = new Date(r.startDate + 'T00:00:00');
         const end = new Date(r.endDate + 'T00:00:00');
