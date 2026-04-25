@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   collection, addDoc, deleteDoc, doc, onSnapshot,
-  query, orderBy, updateDoc,
+  updateDoc,
 } from 'firebase/firestore';
 import { db, serverTimestamp } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
@@ -225,7 +225,7 @@ export default function Schedule() {
     setOpenShifts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
   ), []);
 
-  useEffect(() => onSnapshot(query(collection(db, 'timeOffRequests'), orderBy('createdAt', 'desc')), snap =>
+  useEffect(() => onSnapshot(collection(db, 'timeOffRequests'), snap =>
     setTimeOffRequests(snap.docs.map(d => ({ id: d.id, ...d.data() })))
   ), []);
 

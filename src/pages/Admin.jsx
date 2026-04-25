@@ -374,8 +374,12 @@ export default function Admin() {
       setShifts(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
     const u4 = onSnapshot(query(collection(db, 'openShifts'), orderBy('date')), snap =>
       setOpenShiftsList(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
-    const u5 = onSnapshot(query(collection(db, 'timeOffRequests'), orderBy('createdAt', 'desc')), snap =>
-      setTimeOffRequests(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+    const u5 = onSnapshot(collection(db, 'timeOffRequests'), snap =>
+      setTimeOffRequests(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => {
+        const ta = a.createdAt?.seconds ?? 0;
+        const tb = b.createdAt?.seconds ?? 0;
+        return tb - ta;
+      })));
     return () => { u1(); u2(); u3(); u4(); u5(); };
   }, []);
 
@@ -1729,7 +1733,7 @@ export default function Admin() {
                           <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Reason: </span>
                           {req.reason}
                         </div>
-                        {req.createdAt && (
+                        {req.createdAt?.seconds && (
                           <p className="mt-2 text-xs text-gray-400">
                             Submitted {new Date(req.createdAt.seconds * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                           </p>
