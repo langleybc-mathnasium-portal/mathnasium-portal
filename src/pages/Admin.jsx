@@ -328,6 +328,7 @@ export default function Admin() {
   const [availability, setAvailability] = useState([]);
   const [shifts, setShifts]             = useState([]);
   const [openShiftsList, setOpenShiftsList] = useState([]);
+  const [timeOffRequests, setTimeOffRequests] = useState([]);
   const [tab, setTab]                   = useState('spreadsheet');
 
   // Spreadsheet state
@@ -373,7 +374,9 @@ export default function Admin() {
       setShifts(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
     const u4 = onSnapshot(query(collection(db, 'openShifts'), orderBy('date')), snap =>
       setOpenShiftsList(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
-    return () => { u1(); u2(); u3(); u4(); };
+    const u5 = onSnapshot(query(collection(db, 'timeOffRequests'), orderBy('createdAt', 'desc')), snap =>
+      setTimeOffRequests(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+    return () => { u1(); u2(); u3(); u4(); u5(); };
   }, []);
 
   const approvedUsers = users
@@ -433,8 +436,26 @@ export default function Admin() {
   const handleGenerate = async () => {
     setGenerating(true); setSchedError(''); setDraftSchedule(null);
     try {
+      // Build a set of "userId-date" pairs that are approved time off
+      const approvedTimeOff = new Set();
+      timeOffRequests
+        .filter(r => r.status === 'approved')
+        .forEach(r => {
+          let d = new Date(r.startDate + 'T00:00:00');
+          const end = new Date(r.endDate + 'T00:00:00');
+          while (d <= end) {
+            approvedTimeOff.add(`${r.userId}-${format(d, 'yyyy-MM-dd')}`);
+            d.setDate(d.getDate() + 1);
+          }
+        });
+
+      // Filter availability to exclude approved time off dates
+      const filteredAvailability = availability.filter(a =>
+        !approvedTimeOff.has(`${a.userId}-${a.date}`)
+      );
+
       const result = generateSchedule({
-        instructors: approvedUsers, availability,
+        instructors: approvedUsers, availability: filteredAvailability,
         month: schedMonth, year: schedYear, config: schedConfig,
       });
       setDraftSchedule(result);
@@ -828,12 +849,14 @@ export default function Admin() {
   }
 
   const openCount = openShiftsList.filter(s => s.status === 'open').length;
+  const pendingRequestsCount = timeOffRequests.filter(r => r.status === 'pending').length;
 
   const tabs = [
     { key: 'spreadsheet',  label: 'Scheduler',      icon: Table },
     { key: 'users',        label: 'Manage Users',   icon: UserCheck },
     { key: 'scheduler',    label: 'Auto-Scheduler', icon: Wand2, badge: 'AI', badgeStyle: 'purple' },
     { key: 'payroll',      label: 'Payroll',        icon: DollarSign },
+    { key: 'requests',     label: 'Requests',       icon: CalendarRange },
   ];
 
   return (
@@ -856,6 +879,11 @@ export default function Admin() {
             {t.badge && (
               <span className={`rounded-full px-1.5 py-0.5 text-xs ${t.badgeStyle === 'purple' ? 'bg-purple-100 text-purple-700' : 'bg-orange-100 text-orange-700'}`}>
                 {t.badge}
+              </span>
+            )}
+            {t.key === 'requests' && pendingRequestsCount > 0 && (
+              <span className="rounded-full bg-red-500 px-1.5 py-0.5 text-xs font-bold text-white">
+                {pendingRequestsCount}
               </span>
             )}
           </button>
@@ -1638,6 +1666,105 @@ export default function Admin() {
                         </tr>
                       </tfoot>
                     </table>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── INSTRUCTOR REQUESTS ────────────────────────────────────────── */}
+      {tab === 'requests' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-semibold text-gray-900">Instructor Requests</h3>
+              <p className="text-sm text-gray-500">Time off requests from your team</p>
+            </div>
+            <div className="flex gap-2 text-xs">
+              <span className="rounded-full bg-yellow-100 px-2.5 py-1 font-medium text-yellow-700">
+                {timeOffRequests.filter(r => r.status === 'pending').length} pending
+              </span>
+              <span className="rounded-full bg-green-100 px-2.5 py-1 font-medium text-green-700">
+                {timeOffRequests.filter(r => r.status === 'approved').length} approved
+              </span>
+            </div>
+          </div>
+
+          {timeOffRequests.length === 0 ? (
+            <div className="rounded-xl border bg-white p-10 text-center shadow-sm">
+              <CalendarRange size={36} className="mx-auto mb-3 text-gray-300" />
+              <p className="text-gray-500 font-medium">No requests yet.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {timeOffRequests.map(req => {
+                const startLabel = new Date(req.startDate + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+                const endLabel   = new Date(req.endDate   + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+                const sameDay    = req.startDate === req.endDate;
+                const statusColors = {
+                  pending:  'bg-yellow-100 text-yellow-700',
+                  approved: 'bg-green-100 text-green-700',
+                  denied:   'bg-red-100 text-red-600',
+                };
+                return (
+                  <div key={req.id} className={`rounded-xl border bg-white p-5 shadow-sm ${req.status === 'pending' ? 'border-yellow-200' : ''}`}>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <div className="w-7 h-7 rounded-full bg-red-600 flex items-center justify-center text-xs font-bold text-white">
+                            {req.userName?.split(' ').map(w => w[0]).join('').toUpperCase().slice(0,2)}
+                          </div>
+                          <span className="font-semibold text-gray-900">{req.userName}</span>
+                          <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusColors[req.status] || statusColors.pending}`}>
+                            {req.status?.charAt(0).toUpperCase() + req.status?.slice(1)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-sm text-gray-600 mb-2">
+                          <CalendarRange size={14} className="text-gray-400" />
+                          <span className="font-medium">{sameDay ? startLabel : `${startLabel} – ${endLabel}`}</span>
+                        </div>
+                        <div className="rounded-lg bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Reason: </span>
+                          {req.reason}
+                        </div>
+                        {req.createdAt && (
+                          <p className="mt-2 text-xs text-gray-400">
+                            Submitted {new Date(req.createdAt.seconds * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                          </p>
+                        )}
+                      </div>
+
+                      {req.status === 'pending' && (
+                        <div className="flex flex-col gap-2 shrink-0">
+                          <button
+                            onClick={async () => {
+                              await updateDoc(doc(db, 'timeOffRequests', req.id), { status: 'approved' });
+                            }}
+                            className="flex items-center gap-1.5 rounded-lg bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-700 transition-colors">
+                            <Check size={14} /> Approve
+                          </button>
+                          <button
+                            onClick={async () => {
+                              await updateDoc(doc(db, 'timeOffRequests', req.id), { status: 'denied' });
+                            }}
+                            className="flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 transition-colors">
+                            <X size={14} /> Deny
+                          </button>
+                        </div>
+                      )}
+
+                      {req.status !== 'pending' && (
+                        <button
+                          onClick={async () => {
+                            if (confirm('Delete this request?')) await deleteDoc(doc(db, 'timeOffRequests', req.id));
+                          }}
+                          className="text-gray-300 hover:text-red-400 transition-colors shrink-0">
+                          <Trash2 size={15} />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
