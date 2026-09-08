@@ -35,6 +35,7 @@
 
 import { getFirestore, authenticateRequest } from '../_lib/firebase-admin.js';
 import { runTool, TOOL_DEFINITIONS } from './_tools.js';
+import { centreToday } from '../_lib/centreDate.js';
 
 const MODEL          = 'gemini-2.5-flash';
 const GEMINI_URL     = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
@@ -209,7 +210,8 @@ export default async function handler(req, res) {
     profile,
     centerName,
     summary,
-    today: new Date().toISOString().slice(0, 10),
+    // The centre's date, not the Lambda's — see api/_lib/centreDate.js.
+    today: centreToday(),
   });
 
   // Gemini requires the first turn to be from 'user'. The Firestore log

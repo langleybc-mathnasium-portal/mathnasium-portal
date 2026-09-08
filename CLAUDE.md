@@ -177,6 +177,70 @@ min/max), `shift-shaping.js` (demand curve → contiguous shift blocks),
   plain working hours and **excluded from the hourly budget**, same as the
   Staffing Budget page. Counting them makes every day read as over budget.
 
+### Missed sign-outs (signed in, never signed out)
+
+An instructor taps in on Radius and leaves without tapping out. Radius
+exports that row with a Time In and a blank Time Out.
+
+**The bug:** the importer computed `actualHours` from the times (or the
+Duration column), got `NaN`, and `continue`d — so the row never entered
+`radiusData`. The shift then matched nothing, got `missingFromRadius:
+true`, and the payroll table said **"Not in Radius"**, which reads as *they
+never came in*. Someone who worked a full Saturday looked like a no-show.
+
+`src/lib/signOut.js` (pure, tested) now models four states instead of one
+boolean — `upcoming` / `absent` / `open` / `self-confirmed` / `complete`
+via `signOutState()`. Open punches are kept at parse time with
+`openPunch: true` and `actualHours: 0` — **zero, not a guess**: a Duration
+without a tap-out isn't evidence, and inventing hours here would put a
+fabricated number into payroll.
+
+Flow:
+1. Import flags them. An amber panel above the payroll table lists every
+   open punch with its clock-in and scheduled finish.
+2. Admin presses **Send sign-out requests**. Deliberately manual — the
+   same period gets imported more than once (partial exports, corrections),
+   and auto-sending would email staff about shifts still being checked.
+3. Each person gets one email with a one-tap link. A token doc is written
+   to `signOutRequests/{token}` FIRST; the email only goes if that
+   succeeded, so no un-redeemable link ever reaches an inbox.
+4. They confirm at `/confirm-signout?t=…` — **public route, no login**.
+5. The shift gets `signOutConfirmedTime` / `signOutConfirmedBy:
+   'instructor'` / `signOutConfirmedAt`, and renders purple
+   "Self-confirmed sign-out".
+
+**It is never marked `payrollResolved`.** Confirming is an answer, not a
+sign-off — `payrollNeedsReview()` keeps self-confirmed rows in the
+unresolved count until an admin clears them. That is the whole point of
+labelling them.
+
+**Token security.** 256 bits, document-id-as-token (a wrong guess simply
+doesn't exist), single use, 14-day expiry, and it authorises exactly one
+write: the sign-out time on the one shift it names, to the time the ADMIN
+proposed. The redeemer supplies no time of their own, so a forwarded link
+cannot be used to claim arbitrary hours. Redemption is a Firestore
+transaction, so a double-tap can't apply twice. Rules give clients
+**create only** on `signOutRequests` — no read (the id IS the secret, and
+listing would hand over every live token), no update/delete (a client that
+could edit `usedAt` could replay one).
+
+**Where the endpoint lives.** `api/send-password-reset.js?action=confirm-signout`.
+The 12-function cap left no room for a new file, and that host was chosen
+because its security posture already matches — public by design, with no
+privileged capability next door for a bug in the new branch to reach.
+Multiplexing onto an authenticated endpoint would have put a public code
+path beside privileged ones.
+
+**Person totals.** Open punches sum to zero, so confirmed hours are folded
+back in (`confirmedExtra`) and `diff` / `hasDiscrepancy` are computed
+*after* that pass — deriving them from the raw punch sum left a person who
+HAD confirmed still reading as hours short.
+
+**Not yet possible:** detection only happens when an admin uploads the
+XLSX, because the Radius API in `Ratio_Radius_API_Request_Brief.docx` is
+still pending Mathnasium's approval. Item 2 in that brief is this feature;
+a webhook would let the email go out the same evening instead.
+
 ### Availability failsafe on the weekly grid
 
 `src/lib/availabilityFit.js` answers "did we schedule someone outside the
@@ -301,6 +365,19 @@ adminAssistant + adminHours` only — Online is budgeted the same day but
 scheduled elsewhere. The `steam` / `summerCamp` buckets are **retired**
 (`ACTIVE_BUCKETS` excludes them) but the keys survive so past periods and the 58
 historical flex shifts still report.
+
+## Server-side dates: never use UTC
+
+Vercel Lambdas run UTC; the centre runs Pacific. From ~5pm local the
+server's own calendar date is already **tomorrow**, and `shift.date` is
+centre-local wall clock — so `new Date().toISOString().slice(0,10)` as
+"today" was a day ahead every evening. It hid tonight's open shifts from
+the Owner Assistant (`_tools.js` filters `date >= today`) and told the
+model the wrong date outright.
+
+Use `api/_lib/centreDate.js` — `centreToday()`, `centreYMD(d)`,
+`centreOffsetYMD(n)`, honouring `CENTER_TZ` and DST. `_lib/` isn't routed,
+so it costs nothing against the 12-function cap.
 
 ## Inspecting live data (read-only)
 

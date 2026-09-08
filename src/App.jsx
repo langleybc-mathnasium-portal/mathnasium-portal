@@ -28,6 +28,7 @@ const NotificationPreferences   = lazy(() => import('./pages/NotificationPrefere
 const PlatformRevenue           = lazy(() => import('./pages/PlatformRevenue'));
 const PlatformChat              = lazy(() => import('./pages/PlatformChat'));
 const CenterAnalytics           = lazy(() => import('./pages/CenterAnalytics'));
+const ConfirmSignOut            = lazy(() => import('./pages/ConfirmSignOut'));
 const SupplyDemand              = lazy(() => import('./pages/SupplyDemand'));
 const StaffingBoard             = lazy(() => import('./pages/StaffingBoard'));
 const StaffingBudget            = lazy(() => import('./pages/StaffingBudget'));
@@ -158,6 +159,12 @@ function AppRoutes() {
         <Route path="/apptoto" element={<ProtectedRoute requireOwner><Layout><ApptotoSchedule /></Layout></ProtectedRoute>} />
         {/* Public, NO auth — parents land here from marketing links. */}
         <Route path="/book/:centerId" element={<PublicBook />} />
+        {/* Sign-out confirmation from the payroll email. PUBLIC on purpose:
+            the one-time token in the link is the authorisation, because the
+            person opening it is on a phone and not logged in. The token
+            grants exactly one write on one shift — see
+            api/send-password-reset.js. */}
+        <Route path="/confirm-signout" element={<ConfirmSignOut />} />
         <Route path="/intakes" element={<ProtectedRoute><Layout><IntakeManagement /></Layout></ProtectedRoute>} />
         {/* Parent contact info — name, email, phone. The page has no
             internal role check, so the gate has to be here. Until the

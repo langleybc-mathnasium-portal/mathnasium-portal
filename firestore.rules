@@ -612,6 +612,28 @@ service cloud.firestore {
     //   • accepting a swap        → UPDATES userId/userName only
     // Neither touches date or times, which is what makes the clock-lock
     // below safe.
+    // ── Sign-out confirmation tokens ────────────────────────────────
+    // Written when an admin sends "you signed in but never signed out"
+    // emails; redeemed by api/send-password-reset.js?action=confirm-signout
+    // using the Admin SDK, which bypasses these rules entirely.
+    //
+    // So clients get CREATE and nothing else:
+    //   - no read. The document id IS the secret. Letting any signed-in
+    //     user list this collection would hand them every live token, and
+    //     each one sets a sign-out time on somebody's shift.
+    //   - no update/delete. Redemption is server-side and transactional;
+    //     a client that could edit `usedAt` or `expiresAt` could replay a
+    //     token or extend one indefinitely.
+    // Admins who need to see status read it off the shift instead
+    // (signOutRequestSentAt / signOutConfirmedBy).
+    match /signOutRequests/{token} {
+      allow read: if false;
+      allow update, delete: if false;
+      allow create: if canManageShiftsAt(request.resource.data.get('centerId', ''))
+                    && request.resource.data.get('status', '') == 'pending'
+                    && request.resource.data.get('usedAt', 'x') == null;
+    }
+
     match /shifts/{shiftId} {
       allow read: if isSignedIn();
 

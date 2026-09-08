@@ -22,6 +22,8 @@
 
 import { auth } from '../firebase';
 
+import { SIGNOUT_TTL_DAYS } from './signOut';
+
 const SEND_ENDPOINT = '/api/send-email';
 
 // ─── Send primitive ────────────────────────────────────────────────────────
@@ -34,18 +36,18 @@ const SEND_ENDPOINT = '/api/send-email';
  * @param {Array} emails - array of { to, to_name, subject, body, cta_text?, cta_link? }
  */
 async function sendBatch(emails) {
-  if (!Array.isArray(emails) || emails.length === 0) return;
+  if (!Array.isArray(emails) || emails.length === 0) return false;
 
   let idToken = null;
   try {
     idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
   } catch (err) {
     console.error('[emailService] Failed to read ID token:', err);
-    return;
+    return false;
   }
   if (!idToken) {
     console.warn('[emailService] No signed-in user; skipping email batch.');
-    return;
+    return false;
   }
 
   try {
@@ -60,9 +62,12 @@ async function sendBatch(emails) {
     if (!r.ok) {
       const data = await r.json().catch(() => ({}));
       console.error('[emailService] Send failed:', r.status, data);
+      return false;
     }
+    return true;
   } catch (err) {
     console.error('[emailService] Network error sending batch:', err);
+    return false;
   }
 }
 
@@ -349,5 +354,60 @@ export async function notifyTimeOffDecision(request, recipient, decision) {
     body,
     cta_text: 'View your schedule',
     cta_link: portalUrl(),
+  }]);
+}
+
+// ─── Notify: signed in, never signed out ───────────────────────────────────
+
+/**
+ * Ask one instructor to confirm the sign-out Radius never recorded.
+ *
+ * The tone matters here. This email is sent to someone who DID come to
+ * work — the missing tap-out is a two-second lapse, not a misdeed — and it
+ * arrives days later, once payroll is being reconciled. So it opens by
+ * saying we know they were in, states the time we intend to use, and makes
+ * confirming it one tap. Nobody is asked to log in, remember a password,
+ * or find a page.
+ *
+ * The link carries a single-use token that expires. It authorises exactly
+ * one thing: setting the sign-out time on that one shift.
+ *
+ * @param {object} p
+ * @param {object} p.recipient  - { email, displayName }
+ * @param {string} p.date       - shift date, YYYY-MM-DD
+ * @param {string} p.clockIn    - recorded sign-in, "HH:MM"
+ * @param {string} p.scheduledEnd - proposed sign-out, "HH:MM"
+ * @param {string} p.token      - the confirm token
+ * @param {string} [p.centreName]
+ * @returns {Promise<boolean>} whether the batch was accepted
+ */
+export async function notifyMissingSignOut({
+  recipient, date, clockIn, scheduledEnd, token, centreName,
+}) {
+  if (!recipient?.email || !token) return false;
+
+  const when = fmtDate(date);
+  const inAt = fmtTime(clockIn);
+  const outAt = fmtTime(scheduledEnd);
+  const where = centreName ? ` at ${centreName}` : '';
+
+  const body =
+    `Radius shows you signed in on ${when}${where} at ${inAt}, but no sign-out was recorded for that shift.\n` +
+    `\n` +
+    `Your scheduled finish was ${outAt}. If that's when you left, confirm it below and payroll will use it — ` +
+    `you don't need to log in.\n` +
+    `\n` +
+    `If you actually left at a different time, don't use the button — reply to this email or let the centre ` +
+    `know, and we'll set the right time by hand.\n` +
+    `\n` +
+    `This link works once and expires in ${SIGNOUT_TTL_DAYS} days.`;
+
+  return sendBatch([{
+    to: recipient.email,
+    to_name: firstName(recipient.displayName),
+    subject: `Sign-in recorded, sign-out missing \u2014 ${when}`,
+    body,
+    cta_text: `Confirm ${outAt} sign-out`,
+    cta_link: `${portalUrl()}/confirm-signout?t=${encodeURIComponent(token)}`,
   }]);
 }

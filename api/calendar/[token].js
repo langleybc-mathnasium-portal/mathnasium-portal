@@ -28,6 +28,7 @@
 //   routes). CENTER_TZ env is used as the timezone fallback.
 
 import { getFirestore } from '../_lib/firebase-admin.js';
+import { centreOffsetYMD } from '../_lib/centreDate.js';
 
 const TZ_FALLBACK = process.env.CENTER_TZ || 'America/Vancouver';
 
@@ -128,14 +129,41 @@ export default async function handler(req, res) {
     const userName = user.displayName || 'Ratio';
 
     // Date window (centre-local calendar dates as plain YYYY-MM-DD strings).
-    const today = new Date();
-    const lo = new Date(today.getTime() - WINDOW_PAST_DAYS * 86400000).toISOString().slice(0, 10);
-    const hi = new Date(today.getTime() + WINDOW_FUTURE_DAYS * 86400000).toISOString().slice(0, 10);
+    // These are compared against shift.date, which is centre-local wall
+    // clock, so the edges have to be centre-local too — deriving them from
+    // a UTC instant moved the whole window a day every evening.
+    const lo = centreOffsetYMD(-WINDOW_PAST_DAYS);
+    const hi = centreOffsetYMD(WINDOW_FUTURE_DAYS);
 
-    // Pull the user's shifts + time-off (filter in code to avoid needing
-    // composite indexes).
+    // Pull the user's shifts + time-off.
+    //
+    // The shift read is bounded by the same window we're about to render.
+    // Unbounded, it fetched every shift the person had EVER worked on every
+    // poll — and calendar clients poll a subscribed feed every few minutes,
+    // forever, so the cost grew with tenure and never came back down.
+    //
+    // The bound needs a (userId, date) composite index. Rather than make
+    // this endpoint depend on a deploy that may not have happened yet, we
+    // try the bounded query and fall back to the original unbounded read if
+    // Firestore says the index is missing. Same output either way; the
+    // fallback is just slower. Once `firebase deploy --only firestore:indexes`
+    // has run, the fast path is the one that's taken.
+    const shiftsForUser = async () => {
+      try {
+        return await db.collection('shifts')
+          .where('userId', '==', uid)
+          .where('date', '>=', lo)
+          .where('date', '<=', hi)
+          .get();
+      } catch (err) {
+        if (err?.code !== 9 && !/index/i.test(err?.message || '')) throw err;
+        console.warn('[calendar] (userId,date) index missing — falling back to full read');
+        return db.collection('shifts').where('userId', '==', uid).get();
+      }
+    };
+
     const [shiftSnap, toSnap] = await Promise.all([
-      db.collection('shifts').where('userId', '==', uid).get(),
+      shiftsForUser(),
       db.collection('timeOffRequests').where('userId', '==', uid).get(),
     ]);
 

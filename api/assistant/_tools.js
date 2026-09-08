@@ -14,6 +14,7 @@ import { Resend } from 'resend';
 import { FieldValue } from 'firebase-admin/firestore';
 import { generateSchedule } from '../../src/lib/scheduler.js';
 import { mergeCenterConfig } from '../../src/lib/centerConfig.js';
+import { centreToday } from '../_lib/centreDate.js';
 
 // ── Schemas advertised to Claude ─────────────────────────────────────
 export const TOOL_DEFINITIONS = [
@@ -249,7 +250,10 @@ const TOOL_HANDLERS = {
     }
 
     if (kind === 'open_shifts') {
-      const today = new Date().toISOString().slice(0, 10);
+      // Centre-local, not UTC: after ~5pm Pacific a UTC date is already
+      // tomorrow, which silently hid tonight's open shifts from the
+      // assistant during the busiest hours of the day.
+      const today = centreToday();
       const snap = await ctx.db.collection('openShifts')
         .where('centerId', '==', centerId)
         .where('date', '>=', today)

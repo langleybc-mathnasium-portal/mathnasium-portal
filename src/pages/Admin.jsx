@@ -47,10 +47,16 @@ import CenterSettingsTab from '../components/CenterSettingsTab';
 import HolidaysEditor from '../components/HolidaysEditor';
 import {
   notifyOpenShift, notifySchedulePosted, notifyTimeOffDecision,
+  notifyMissingSignOut,
 } from '../lib/emailService';
 import { attachEmails } from '../lib/userContact';
 import { weekdayBudgetTotal, resolveWeekdayModel } from '../lib/budgetBuckets';
 import { isPaidStatHoliday, statPayForHoliday, minusDays } from '../lib/statPay';
+import {
+  isOpenPunch, signOutState, resolvedActualHours, effectiveSignOut,
+  buildSignOutRequest, newSignOutToken, SIGNOUT_TTL_DAYS, payrollNeedsReview,
+} from '../lib/signOut';
+import { fmtTime as fmt12h } from '../lib/availabilityLog';
 import {
   resolveUserForCenter,
   membershipFieldPath,
@@ -4103,6 +4109,14 @@ export default function Admin() {
         payrollNote: typeof s.payrollNote === 'string' ? s.payrollNote : '',
         payrollNoteBy: typeof s.payrollNoteBy === 'string' ? s.payrollNoteBy : '',
         payrollNoteAt: s.payrollNoteAt || null,
+        // Sign-out an instructor supplied themselves, when Radius has a
+        // clock-in but no tap-out. Must be projected explicitly — this is
+        // an allow-list, and signOutState() reads these off the row.
+        signOutConfirmedTime: typeof s.signOutConfirmedTime === 'string' ? s.signOutConfirmedTime : '',
+        signOutConfirmedBy:   typeof s.signOutConfirmedBy === 'string' ? s.signOutConfirmedBy : '',
+        signOutConfirmedAt:   s.signOutConfirmedAt || null,
+        signOutRequestSentAt: s.signOutRequestSentAt || null,
+        userId: s.userId || null,
         shiftId: s.id,
         sick: isSick,
         noShow: isNoShow,
@@ -4948,9 +4962,23 @@ export default function Admin() {
         // Prefer the time-in / time-out computation when we have both
         // (most accurate). Fall back to the (normalised) Duration column
         // when times are missing or unparseable.
-        const actualHours = Number.isFinite(fromTimes) ? fromTimes
-                          : Number.isFinite(fromCol)   ? fromCol
-                          : NaN;
+        const derivedHours = Number.isFinite(fromTimes) ? fromTimes
+                           : Number.isFinite(fromCol)   ? fromCol
+                           : NaN;
+        // Signed in, never signed out.
+        //
+        // These rows used to die right here: no Time Out meant no duration,
+        // `Number.isFinite` was false, and `continue` threw the row away —
+        // so the shift matched nothing and the payroll table said "Not in
+        // Radius", i.e. *they never came in*. Someone who worked a full day
+        // read as a no-show. Now the row survives, carrying zero hours
+        // (we genuinely don't know them yet) and a flag saying why.
+        //
+        // Hours stay at zero even if the Duration column happens to hold
+        // something: a duration without a tap-out isn't evidence, and
+        // guessing here would put an invented number into payroll.
+        const openPunch = isOpenPunch({ timeIn, timeOut });
+        const actualHours = openPunch ? 0 : derivedHours;
         // attendanceId is optional — we keep the existing "must be numeric"
         // filter when the column is present, since it's how Radius marks
         // real rows vs total/summary rows. If the column isn't there we
@@ -4961,7 +4989,8 @@ export default function Admin() {
         }
 
         if (!name) continue;
-        if (!dateRaw || !Number.isFinite(actualHours)) continue;
+        if (!dateRaw) continue;
+        if (!openPunch && !Number.isFinite(actualHours)) continue;
 
         // Parse DD/MM/YYYY → YYYY-MM-DD
         if (!dateRaw.includes('/')) continue;
@@ -4970,7 +4999,7 @@ export default function Admin() {
         const [d, m, y] = parts;
         const dateStr = `${y.trim()}-${String(m.trim()).padStart(2,'0')}-${String(d.trim()).padStart(2,'0')}`;
 
-        parsed.push({ name, date: dateStr, timeIn, timeOut, actualHours });
+        parsed.push({ name, date: dateStr, timeIn, timeOut, actualHours, openPunch });
       }
 
       if (parsed.length === 0) {
@@ -5156,6 +5185,107 @@ export default function Admin() {
     handleExportPayroll();
   };
 
+  /**
+   * Every "signed in, never signed out" row in the loaded period.
+   *
+   * Flattened across people so the admin sees one list to act on rather
+   * than hunting amber badges down a long table. Rows already confirmed
+   * drop out on their own — their state is 'self-confirmed', not 'open'.
+   */
+  const openSignOuts = useMemo(() => {
+    if (!comparisonSummary) return [];
+    const out = [];
+    for (const person of comparisonSummary.perPerson || []) {
+      for (const s of person.shiftComparisons || []) {
+        if (!s || s.signOutState !== 'open' || s.noShow) continue;
+        out.push({ person: person.name, userId: s.userId, shift: s, row: s.actual });
+      }
+    }
+    return out.sort((a, b) => a.shift.date.localeCompare(b.shift.date)
+      || a.person.localeCompare(b.person));
+  }, [comparisonSummary]);
+
+  const [sendingSignOuts, setSendingSignOuts] = useState(false);
+
+  /**
+   * Email each affected instructor a one-tap confirm link.
+   *
+   * Deliberately admin-triggered rather than automatic on import. The same
+   * period gets imported more than once — a partial export, a corrected
+   * file, a second look — and firing staff email on every upload would
+   * send duplicates for shifts still being checked. A human presses this
+   * when the list looks right.
+   *
+   * A token doc is written first and the email only goes out if that
+   * succeeded, so there is never a link in someone's inbox that Ratio
+   * can't redeem. Failures are reported per person; one bad address
+   * doesn't stop the rest.
+   */
+  const handleSendSignOutRequests = async () => {
+    if (openSignOuts.length === 0 || sendingSignOuts) return;
+    const ok = await confirmDialog({
+      title: `Email ${openSignOuts.length} ${openSignOuts.length === 1 ? 'instructor' : 'instructors'}?`,
+      message: `Each person gets a link to confirm the scheduled finish time for their shift. `
+             + `The link works once and expires in ${SIGNOUT_TTL_DAYS} days. `
+             + `Anyone who already confirmed is not included.`,
+      confirmText: `Send ${openSignOuts.length}`,
+      cancelText: 'Cancel',
+    });
+    if (!ok) return;
+
+    setSendingSignOuts(true);
+    let sent = 0;
+    const failed = [];
+    try {
+      // Emails live in users/{uid}/private/contact, so they have to be
+      // fetched rather than read off the user doc.
+      const withEmail = await attachEmails(
+        users.filter(u => openSignOuts.some(o => o.userId && o.userId === u.id)),
+      );
+      const emailById = new Map(withEmail.map(u => [u.id, u]));
+
+      for (const item of openSignOuts) {
+        const u = item.userId ? emailById.get(item.userId) : null;
+        if (!u?.email) { failed.push(`${item.person} (no email on file)`); continue; }
+        try {
+          const token = newSignOutToken();
+          await setDoc(
+            doc(db, 'signOutRequests', token),
+            buildSignOutRequest({
+              shift: item.shift,
+              row: item.row,
+              user: u,
+              centerId: activeCenterId,
+              requestedBy: user?.email || user?.displayName || null,
+            }),
+          );
+          const delivered = await notifyMissingSignOut({
+            recipient: { email: u.email, displayName: u.displayName },
+            date: item.shift.date,
+            clockIn: normalizeTimeToHHMM(item.row?.timeIn),
+            scheduledEnd: normalizeTimeToHHMM(item.shift.endTime),
+            token,
+            centreName: centerConfig?.name,
+          });
+          if (!delivered) { failed.push(`${item.person} (send failed)`); continue; }
+          // Stamped on the shift so the panel can say "already asked" and
+          // a re-import doesn't look like nothing happened.
+          await updateDoc(doc(db, 'shifts', item.shift.shiftId), {
+            signOutRequestSentAt: new Date().toISOString(),
+          });
+          sent += 1;
+        } catch (err) {
+          failed.push(`${item.person} (${err?.message || 'failed'})`);
+        }
+      }
+    } finally {
+      setSendingSignOuts(false);
+    }
+
+    if (sent > 0) toast.success(`Sent ${sent} sign-out ${sent === 1 ? 'request' : 'requests'}.`);
+    if (failed.length > 0) toast.error(`Could not send to: ${failed.join(', ')}`);
+  };
+
   const addRadiusEntry = (name) => {
     setRadiusData(prev => [...prev, { name, date: payStart, timeIn: '', timeOut: '', actualHours: 0 }]);
   };
@@ -5228,8 +5358,10 @@ export default function Admin() {
       // have a clock-in for them — leaving them in made every no-show look
       // like an unexplained shortfall on the person's header.
       const scheduledHours = Math.round((person.totalHours - (person.noShowHours || 0)) * 100) / 100;
-      const diff = Math.round((actualHours - scheduledHours) * 100) / 100;
-      const hasDiscrepancy = Math.abs(diff) > 0.25; // >15 min difference flags it
+      // NB: diff / hasDiscrepancy are computed further down, once the
+      // per-shift pass has had a chance to fold in any confirmed sign-outs.
+      // Deriving them from the raw punch sum here left a person who HAD
+      // confirmed their missing tap-out still reading as hours short.
 
       // Per-shift comparison.
       //
@@ -5330,6 +5462,28 @@ export default function Admin() {
             // Future rows render neutral and are excluded from the
             // unresolved count until the day has actually passed.
             const isFuture = block.date > todayISO;
+
+            // How the clock data actually stands for this row. Four states
+            // used to collapse into one boolean, which is why "signed in but
+            // never signed out" was indistinguishable from "never came in".
+            const soState = signOutState({ match, shift: s, isFuture });
+
+            // An open punch contributes 0 raw hours (we don't know them).
+            // Once the instructor confirms their sign-out we DO know them,
+            // so the row gets real hours back — and they're added to the
+            // person's total further down, since the raw punch sum missed them.
+            let confirmedHours = null;
+            if (soState === 'self-confirmed' && match) {
+              const full = resolvedActualHours(match, s);
+              if (full != null) {
+                const frac = (shared && schedH > 0) ? (it.s.hours / schedH) : 1;
+                confirmedHours = Math.round(full * frac * 100) / 100;
+                shareHours = confirmedHours;
+                shiftDiff  = Math.round((confirmedHours - s.hours) * 100) / 100;
+                shiftDisc  = Math.abs(shiftDiff) > 0.25;
+              }
+            }
+
             compByIdx.set(it.sIdx, {
               ...s,
               actual: match || null,
@@ -5337,7 +5491,12 @@ export default function Admin() {
               sharedClockIn: shared && !!match,  // true when a clock-in covers >1 shift
               shiftDiff,
               shiftDiscrepancy: shiftDisc && !isFuture,
+              // Kept meaning exactly what it says: no Radius row at all.
+              // An open punch HAS a row, so it is no longer swept in here.
               missingFromRadius: !match,
+              signOutState: soState,
+              signOutConfirmed: effectiveSignOut(match || {}, s),
+              confirmedHours,
               isFuture,
               _shiftIdx: it.sIdx,
             });
@@ -5354,9 +5513,18 @@ export default function Admin() {
       // shift" button so the owner can fix them.
       const unmatchedRadius = radiusRows.filter(r => !usedRadiusIdx.has(r._idx));
 
+      // Open punches summed to zero above (correctly — the hours weren't
+      // known). Any that have since been confirmed do have hours now, so
+      // fold them in or the period total silently under-reports.
+      const confirmedExtra = shiftComparisons
+        .reduce((sum, c) => sum + (c?.confirmedHours || 0), 0);
+      const totalActual = Math.round((actualHours + confirmedExtra) * 100) / 100;
+      const diff = Math.round((totalActual - scheduledHours) * 100) / 100;
+      const hasDiscrepancy = Math.abs(diff) > 0.25; // >15 min difference flags it
+
       return {
         ...person,
-        actualHours: Math.round(actualHours * 100) / 100,
+        actualHours: totalActual,
         scheduledHours,
         diff,
         hasDiscrepancy,
@@ -7231,10 +7399,7 @@ export default function Admin() {
                       // Future shifts aren't outstanding work — they just
                       // haven't happened. Counting them made the export
                       // warning fire on every mid-period run.
-                      if (!s.noShow && !s.isFuture
-                        && (s.shiftDiscrepancy || s.missingFromRadius) && !s.payrollResolved) {
-                        unresolved++;
-                      }
+                      if (payrollNeedsReview(s)) unresolved++;
                     }
                   }
                   return (
@@ -7398,6 +7563,67 @@ export default function Admin() {
             </div>
           )}
 
+          {/* Signed in, never signed out.
+              Its own panel rather than a badge buried in the table: these
+              are the rows a human has to chase, and they used to be
+              invisible — the importer dropped them and the shift read as
+              "Not in Radius", i.e. never turned up. */}
+          {openSignOuts.length > 0 && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-5 shadow-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <AlertTriangle size={16} className="text-amber-700" />
+                <h3 className="font-semibold text-amber-900">
+                  {openSignOuts.length} {openSignOuts.length === 1 ? 'shift has' : 'shifts have'} a sign-in but no sign-out
+                </h3>
+              </div>
+              <p className="mt-1.5 text-sm leading-relaxed text-amber-900/80">
+                Radius recorded them arriving and nothing else. They worked — we just
+                don&apos;t know when they left, so these hours can&apos;t be paid from the clock
+                alone. Emailing asks each person to confirm their scheduled finish time;
+                whatever comes back is marked as self-reported and still shows up here for you
+                to check.
+              </p>
+
+              <ul className="mt-3 divide-y divide-amber-200 rounded-lg border border-amber-200 bg-white">
+                {openSignOuts.map(({ person, shift, row }) => (
+                  <li key={shift.shiftId} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
+                    <span className="font-medium text-gray-900">{person}</span>
+                    <span className="text-gray-500">
+                      {new Date(`${shift.date}T12:00:00`).toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' })}
+                    </span>
+                    <span className="tabular-nums text-gray-600">
+                      in {fmt12h(normalizeTimeToHHMM(row?.timeIn))}
+                    </span>
+                    <span className="text-gray-400">→</span>
+                    <span className="tabular-nums text-gray-600">
+                      scheduled out {fmt12h(normalizeTimeToHHMM(shift.endTime))}
+                    </span>
+                    {shift.signOutRequestSentAt && (
+                      <span className="ml-auto rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-600"
+                        title={`Asked on ${new Date(shift.signOutRequestSentAt).toLocaleString()}`}>
+                        already asked
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+
+              <button
+                onClick={handleSendSignOutRequests}
+                disabled={sendingSignOuts}
+                className="mt-3 flex items-center gap-2 rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Mail size={15} />
+                {sendingSignOuts
+                  ? 'Sending…'
+                  : `Send sign-out ${openSignOuts.length === 1 ? 'request' : 'requests'} (${openSignOuts.length})`}
+              </button>
+              <p className="mt-2 text-xs text-amber-900/70">
+                Nothing is emailed until you press this. Links work once and expire in {SIGNOUT_TTL_DAYS} days.
+              </p>
+            </div>
+          )}
+
           {/* Currently-excluded salary staff. Click × on any chip to add them
               back to payroll for this period. Owner / super-admin only:
               writing to centerConfig.salaryStaff requires isOwnerAtCenter
@@ -7444,9 +7670,7 @@ export default function Admin() {
                 // wearing a red border and an ⚠ badge, and it certainly
                 // shouldn't have said "✓ match" while a row sat unresolved.
                 const openIssues = hasRadius
-                  ? (person.shiftComparisons || []).filter(s =>
-                      !s.noShow && !s.isFuture
-                      && (s.shiftDiscrepancy || s.missingFromRadius) && !s.payrollResolved).length
+                  ? (person.shiftComparisons || []).filter(payrollNeedsReview).length
                   : 0;
                 const isDiscrepant = openIssues > 0;
                 return (
@@ -7637,8 +7861,12 @@ export default function Admin() {
                           const isNoShow = !!s.noShow;
                           // Future shifts can't be discrepant — they haven't
                           // happened. They render neutral rather than red.
-                          const rowFlag = hasRadius && !isNoShow && !s.isFuture
-                            && (s.shiftDiscrepancy || s.missingFromRadius);
+                          // `payrollNeedsReview` also folds in payrollResolved,
+                          // which the caller below re-applies; passing a copy
+                          // without it keeps the existing "resolved overrides
+                          // the red flag" behaviour intact one line down.
+                          const rowFlag = hasRadius
+                            && payrollNeedsReview({ ...s, payrollResolved: false });
                           const hasNote = !!(s.payrollNote && s.payrollNote.trim());
                           const isEditingNote = noteEditing.shiftId === s.shiftId;
                           // Resolved overrides the red flag — once admin
@@ -7691,6 +7919,34 @@ export default function Admin() {
                                     <span className={`font-medium ${isNoShow ? 'text-gray-400' : 'text-red-500'}`}>
                                       {isNoShow ? 'No clock-in — no show' : 'Not in Radius'}
                                     </span>
+                                  ) : s.signOutState === 'open' ? (
+                                    // Signed in, never signed out. AMBER, not red,
+                                    // and worded so it can't be misread as absence:
+                                    // we know they were here, we just don't know
+                                    // when they left.
+                                    <div>
+                                      <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 ring-1 ring-inset ring-amber-300">
+                                        Signed in · no sign-out
+                                      </span>
+                                      <div className="mt-1 flex items-center gap-1 text-[11px] text-gray-500">
+                                        <span className="tabular-nums">in {fmt12h(normalizeTimeToHHMM(s.actual.timeIn))}</span>
+                                        <span>· out unknown</span>
+                                      </div>
+                                    </div>
+                                  ) : s.signOutState === 'self-confirmed' ? (
+                                    // They filled in their own sign-out from the
+                                    // emailed link. Purple is this table's existing
+                                    // "a human typed this" colour (same as a manual
+                                    // Payroll h override), so it reads consistently.
+                                    <div>
+                                      <span className="inline-flex items-center gap-1 rounded bg-purple-100 px-2 py-0.5 text-[11px] font-semibold text-purple-800 ring-1 ring-inset ring-purple-300"
+                                        title={`Sign-out time supplied by the instructor${s.signOutConfirmedAt ? ` on ${new Date(s.signOutConfirmedAt).toLocaleString()}` : ''}. Radius has no tap-out for this shift.`}>
+                                        Self-confirmed sign-out
+                                      </span>
+                                      <div className="mt-1 text-[11px] text-gray-500 tabular-nums">
+                                        in {fmt12h(normalizeTimeToHHMM(s.actual.timeIn))} – {fmt12h(s.signOutConfirmed?.time)} (stated)
+                                      </div>
+                                    </div>
                                   ) : (
                                     <>
                                       <div className="flex items-center gap-1">
@@ -7746,6 +8002,10 @@ export default function Admin() {
                                   {isNoShow ? 'not paid'
                                     : (s.isFuture && s.missingFromRadius) ? '—'
                                     : s.missingFromRadius ? (showRedFlag ? '⚠ missing' : 'missing')
+                                    // No sign-out means no duration to compare
+                                    // against — a diff here would be fiction.
+                                    : s.signOutState === 'open' ? 'no sign-out'
+                                    : s.shiftDiff == null ? '—'
                                     : s.shiftDiff > 0 ? `+${s.shiftDiff.toFixed(2)}h` : `${s.shiftDiff.toFixed(2)}h`}
                                 </td>
                               )}
