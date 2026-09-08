@@ -5055,112 +5055,6 @@ export default function Admin() {
     handleExportPayroll();
   };
 
-  /**
-   * Every "signed in, never signed out" row in the loaded period.
-   *
-   * Flattened across people so the admin sees one list to act on rather
-   * than hunting amber badges down a long table. Rows already confirmed
-   * drop out on their own — their state is 'self-confirmed', not 'open'.
-   */
-  const openSignOuts = useMemo(() => {
-    if (!comparisonSummary) return [];
-    const out = [];
-    for (const person of comparisonSummary.perPerson || []) {
-      for (const s of person.shiftComparisons || []) {
-        // 'open' means the shift has ended and there is still no tap-out.
-        // 'in-progress' (they're at work right now) is excluded by that check
-        // — a real export taken at 4pm had 14 of its 17 open punches in that
-        // state, and emailing them would have asked people at their desks to
-        // confirm they'd gone home.
-        if (!s || s.signOutState !== 'open' || s.noShow) continue;
-        out.push({ person: person.name, userId: s.userId, shift: s, row: s.actual });
-      }
-    }
-    return out.sort((a, b) => a.shift.date.localeCompare(b.shift.date)
-      || a.person.localeCompare(b.person));
-  }, [comparisonSummary]);
-
-  const [sendingSignOuts, setSendingSignOuts] = useState(false);
-
-  /**
-   * Email each affected instructor a one-tap confirm link.
-   *
-   * Deliberately admin-triggered rather than automatic on import. The same
-   * period gets imported more than once — a partial export, a corrected
-   * file, a second look — and firing staff email on every upload would
-   * send duplicates for shifts still being checked. A human presses this
-   * when the list looks right.
-   *
-   * A token doc is written first and the email only goes out if that
-   * succeeded, so there is never a link in someone's inbox that Ratio
-   * can't redeem. Failures are reported per person; one bad address
-   * doesn't stop the rest.
-   */
-  const handleSendSignOutRequests = async () => {
-    if (openSignOuts.length === 0 || sendingSignOuts) return;
-    const ok = await confirmDialog({
-      title: `Email ${openSignOuts.length} ${openSignOuts.length === 1 ? 'instructor' : 'instructors'}?`,
-      message: `Each person gets a link to confirm the scheduled finish time for their shift. `
-             + `The link works once and expires in ${SIGNOUT_TTL_DAYS} days. `
-             + `Anyone who already confirmed is not included.`,
-      confirmText: `Send ${openSignOuts.length}`,
-      cancelText: 'Cancel',
-    });
-    if (!ok) return;
-
-    setSendingSignOuts(true);
-    let sent = 0;
-    const failed = [];
-    try {
-      // Emails live in users/{uid}/private/contact, so they have to be
-      // fetched rather than read off the user doc.
-      const withEmail = await attachEmails(
-        users.filter(u => openSignOuts.some(o => o.userId && o.userId === u.id)),
-      );
-      const emailById = new Map(withEmail.map(u => [u.id, u]));
-
-      for (const item of openSignOuts) {
-        const u = item.userId ? emailById.get(item.userId) : null;
-        if (!u?.email) { failed.push(`${item.person} (no email on file)`); continue; }
-        try {
-          const token = newSignOutToken();
-          await setDoc(
-            doc(db, 'signOutRequests', token),
-            buildSignOutRequest({
-              shift: item.shift,
-              row: item.row,
-              user: u,
-              centerId: activeCenterId,
-              requestedBy: user?.email || user?.displayName || null,
-            }),
-          );
-          const delivered = await notifyMissingSignOut({
-            recipient: { email: u.email, displayName: u.displayName },
-            date: item.shift.date,
-            clockIn: normalizeTimeToHHMM(item.row?.timeIn),
-            scheduledEnd: normalizeTimeToHHMM(item.shift.endTime),
-            token,
-            centreName: centerConfig?.name,
-          });
-          if (!delivered) { failed.push(`${item.person} (send failed)`); continue; }
-          // Stamped on the shift so the panel can say "already asked" and
-          // a re-import doesn't look like nothing happened.
-          await updateDoc(doc(db, 'shifts', item.shift.shiftId), {
-            signOutRequestSentAt: new Date().toISOString(),
-          });
-          sent += 1;
-        } catch (err) {
-          failed.push(`${item.person} (${err?.message || 'failed'})`);
-        }
-      }
-    } finally {
-      setSendingSignOuts(false);
-    }
-
-    if (sent > 0) toast.success(`Sent ${sent} sign-out ${sent === 1 ? 'request' : 'requests'}.`);
-    if (failed.length > 0) toast.error(`Could not send to: ${failed.join(', ')}`);
-  };
-
   const addRadiusEntry = (name) => {
     setRadiusData(prev => [...prev, { name, date: payStart, timeIn: '', timeOut: '', actualHours: 0 }]);
   };
@@ -5480,6 +5374,117 @@ export default function Admin() {
     return { perPerson, orphans, ignoredRadius };
   }, [payrollSummary, radiusData, usersForCentre, approvedUsers,
       volunteerNames, salaryStaff, hiddenFromOps]);
+
+  // NB: this block must stay BELOW `comparisonSummary`. It reads that
+  // binding in its dependency array, which React evaluates during render —
+  // so declaring it above threw "Cannot access before initialization" and
+  // took out the whole Manage Payroll tab. A `const` is in the temporal
+  // dead zone until its own line runs; hoisting does not save you here.
+  /**
+   * Every "signed in, never signed out" row in the loaded period.
+   *
+   * Flattened across people so the admin sees one list to act on rather
+   * than hunting amber badges down a long table. Rows already confirmed
+   * drop out on their own — their state is 'self-confirmed', not 'open'.
+   */
+  const openSignOuts = useMemo(() => {
+    if (!comparisonSummary) return [];
+    const out = [];
+    for (const person of comparisonSummary.perPerson || []) {
+      for (const s of person.shiftComparisons || []) {
+        // 'open' means the shift has ended and there is still no tap-out.
+        // 'in-progress' (they're at work right now) is excluded by that check
+        // — a real export taken at 4pm had 14 of its 17 open punches in that
+        // state, and emailing them would have asked people at their desks to
+        // confirm they'd gone home.
+        if (!s || s.signOutState !== 'open' || s.noShow) continue;
+        out.push({ person: person.name, userId: s.userId, shift: s, row: s.actual });
+      }
+    }
+    return out.sort((a, b) => a.shift.date.localeCompare(b.shift.date)
+      || a.person.localeCompare(b.person));
+  }, [comparisonSummary]);
+
+  const [sendingSignOuts, setSendingSignOuts] = useState(false);
+
+  /**
+   * Email each affected instructor a one-tap confirm link.
+   *
+   * Deliberately admin-triggered rather than automatic on import. The same
+   * period gets imported more than once — a partial export, a corrected
+   * file, a second look — and firing staff email on every upload would
+   * send duplicates for shifts still being checked. A human presses this
+   * when the list looks right.
+   *
+   * A token doc is written first and the email only goes out if that
+   * succeeded, so there is never a link in someone's inbox that Ratio
+   * can't redeem. Failures are reported per person; one bad address
+   * doesn't stop the rest.
+   */
+  const handleSendSignOutRequests = async () => {
+    if (openSignOuts.length === 0 || sendingSignOuts) return;
+    const ok = await confirmDialog({
+      title: `Email ${openSignOuts.length} ${openSignOuts.length === 1 ? 'instructor' : 'instructors'}?`,
+      message: `Each person gets a link to confirm the scheduled finish time for their shift. `
+             + `The link works once and expires in ${SIGNOUT_TTL_DAYS} days. `
+             + `Anyone who already confirmed is not included.`,
+      confirmText: `Send ${openSignOuts.length}`,
+      cancelText: 'Cancel',
+    });
+    if (!ok) return;
+
+    setSendingSignOuts(true);
+    let sent = 0;
+    const failed = [];
+    try {
+      // Emails live in users/{uid}/private/contact, so they have to be
+      // fetched rather than read off the user doc.
+      const withEmail = await attachEmails(
+        users.filter(u => openSignOuts.some(o => o.userId && o.userId === u.id)),
+      );
+      const emailById = new Map(withEmail.map(u => [u.id, u]));
+
+      for (const item of openSignOuts) {
+        const u = item.userId ? emailById.get(item.userId) : null;
+        if (!u?.email) { failed.push(`${item.person} (no email on file)`); continue; }
+        try {
+          const token = newSignOutToken();
+          await setDoc(
+            doc(db, 'signOutRequests', token),
+            buildSignOutRequest({
+              shift: item.shift,
+              row: item.row,
+              user: u,
+              centerId: activeCenterId,
+              requestedBy: user?.email || user?.displayName || null,
+            }),
+          );
+          const delivered = await notifyMissingSignOut({
+            recipient: { email: u.email, displayName: u.displayName },
+            date: item.shift.date,
+            clockIn: normalizeTimeToHHMM(item.row?.timeIn),
+            scheduledEnd: normalizeTimeToHHMM(item.shift.endTime),
+            token,
+            centreName: centerConfig?.name,
+          });
+          if (!delivered) { failed.push(`${item.person} (send failed)`); continue; }
+          // Stamped on the shift so the panel can say "already asked" and
+          // a re-import doesn't look like nothing happened.
+          await updateDoc(doc(db, 'shifts', item.shift.shiftId), {
+            signOutRequestSentAt: new Date().toISOString(),
+          });
+          sent += 1;
+        } catch (err) {
+          failed.push(`${item.person} (${err?.message || 'failed'})`);
+        }
+      }
+    } finally {
+      setSendingSignOuts(false);
+    }
+
+    if (sent > 0) toast.success(`Sent ${sent} sign-out ${sent === 1 ? 'request' : 'requests'}.`);
+    if (failed.length > 0) toast.error(`Could not send to: ${failed.join(', ')}`);
+  };
 
   // Save a Radius-name alias on a staff user. Used by the orphan-mapping
   // dropdown — after this, the matcher attributes that Radius row (and
