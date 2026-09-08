@@ -188,16 +188,39 @@ Duration column), got `NaN`, and `continue`d — so the row never entered
 true`, and the payroll table said **"Not in Radius"**, which reads as *they
 never came in*. Someone who worked a full Saturday looked like a no-show.
 
-`src/lib/signOut.js` (pure, tested) now models four states instead of one
-boolean — `upcoming` / `absent` / `open` / `self-confirmed` / `complete`
-via `signOutState()`. Open punches are kept at parse time with
+`src/lib/signOut.js` (pure, tested) now models six states instead of one
+boolean — `upcoming` / `absent` / `in-progress` / `open` / `self-confirmed`
+/ `complete` via `signOutState()`. Open punches are kept at parse time with
 `openPunch: true` and `actualHours: 0` — **zero, not a guess**: a Duration
 without a tap-out isn't evidence, and inventing hours here would put a
 fabricated number into payroll.
 
+**An open punch is not automatically a missed sign-out.** Most of the time
+it means the person is STILL AT WORK. A real export taken mid-afternoon on
+8 Sept 2026 held 17 open punches and **14 were staff currently on the
+floor** — emailing them would have asked people at their desks to confirm
+they'd gone home. `signOutState()` therefore returns `'in-progress'` until
+the shift's scheduled end plus `SIGNOUT_GRACE_MINUTES` (30) has passed;
+only then does it become `'open'` and eligible for an email. The grace also
+covers someone who finishes at 7:00 and taps out at 7:06.
+
+Parsing lives in `src/lib/radiusTimesheet.js` (`parseRadiusRows`), not
+inline in the import handler, and is tested against a real export saved at
+`src/lib/__fixtures__/radius-export-2026-09-08.json`. The export's shape:
+a leading blank column, a per-person section header row ("Aarav Agarkar
+(I)"), one row per punch, and a "Total: 1354" subtotal — **only punch rows
+carry a numeric Employee Attendance Id**, which is what separates the
+three. Dates are DD/MM/YYYY, times 12-hour. Open punches have Time Out as
+an empty string and BOTH Duration columns empty, but they do have an
+attendance id, so they are real rows. Two employees have parentheses in
+their actual names ("Jieun (Joanne) Lee", "Darshveer (Diya) Brar") — don't
+use parens to detect section headers.
+
 Flow:
 1. Import flags them. An amber panel above the payroll table lists every
-   open punch with its clock-in and scheduled finish.
+   open punch **whose shift has ended** with its clock-in and scheduled
+   finish. Staff still on shift show a sky-blue "On shift now" chip in the
+   table and are never listed or emailed.
 2. Admin presses **Send sign-out requests**. Deliberately manual — the
    same period gets imported more than once (partial exports, corrections),
    and auto-sending would email staff about shifts still being checked.

@@ -53,9 +53,10 @@ import { attachEmails } from '../lib/userContact';
 import { weekdayBudgetTotal, resolveWeekdayModel } from '../lib/budgetBuckets';
 import { isPaidStatHoliday, statPayForHoliday, minusDays } from '../lib/statPay';
 import {
-  isOpenPunch, signOutState, resolvedActualHours, effectiveSignOut,
+  signOutState, resolvedActualHours, effectiveSignOut,
   buildSignOutRequest, newSignOutToken, SIGNOUT_TTL_DAYS, payrollNeedsReview,
 } from '../lib/signOut';
+import { parseRadiusRows } from '../lib/radiusTimesheet';
 import { fmtTime as fmt12h } from '../lib/availabilityLog';
 import {
   resolveUserForCenter,
@@ -4866,147 +4867,16 @@ export default function Admin() {
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
 
-      // Locate the header row + build a column map. Radius sometimes puts a
-      // title / company-name row above the actual headers, so we scan the
-      // first ~10 rows for one that looks like a header row.
-      const norm = (s) => String(s ?? '').trim().toLowerCase();
-      let headerIndex = -1;
-      let colMap = null;
-      const HEADER_SCAN_LIMIT = Math.min(rows.length, 10);
-      for (let i = 0; i < HEADER_SCAN_LIMIT; i++) {
-        const r = rows[i].map(norm);
-        // Find each column we need by keyword presence so cosmetic header
-        // tweaks ("Employee Name" → "Employee name", "Date" → "Shift Date")
-        // don't break us.
-        const find = (predicate) => r.findIndex(predicate);
-        const candidate = {
-          name:         find(c => c.includes('employee') && c.includes('name')),
-          attendanceId: find(c => c.includes('attendance') && c.includes('id')),
-          date:         find(c => c === 'date' || c.includes('shift date') || c.includes('work date')),
-          timeIn:       find(c => c.replace(/[^a-z]/g, '') === 'timein' || (c.includes('time') && c.includes('in') && !c.includes('out'))),
-          timeOut:      find(c => c.replace(/[^a-z]/g, '') === 'timeout' || (c.includes('time') && c.includes('out'))),
-          duration:     find(c => c.includes('duration') || c.includes('hours')),
-        };
-        // Accept this row as the header iff we located everything we need.
-        if (
-          candidate.name >= 0 && candidate.date >= 0 &&
-          candidate.timeIn >= 0 && candidate.timeOut >= 0 &&
-          candidate.duration >= 0
-        ) {
-          headerIndex = i;
-          colMap = candidate;
-          break;
-        }
-      }
-      if (!colMap) {
-        setRadiusError(
-          'Could not find the expected columns in this file. Make sure it is the Radius Employee Timesheet export with columns: Employee Name, Date, Time In, Time Out, Duration.'
-        );
+      // Parsing lives in src/lib/radiusTimesheet.js so it can be run against
+      // real export files in tests — it used to be inline here, which meant
+      // the only way to find out whether it handled a given file was to
+      // click Upload and squint. That is how missed sign-outs stayed broken.
+      const { entries, error } = parseRadiusRows(rows);
+      if (error) {
+        setRadiusError(error);
         return;
       }
-
-      // Normalise Radius's Duration column to actual decimal hours.
-      // Radius exports duration in MINUTES (a 4-hour shift comes through
-      // as 242 — i.e. 4h 2min = 242 minutes — not 242 hours). Treating
-      // it as hours was producing nonsense totals like "2,095h" instead
-      // of "35h" for a pay period. Handles three observed formats:
-      //   - minutes as a plain number (242)        → divide by 60
-      //   - decimal hours (4.03)                   → leave alone
-      //   - "HH:MM" string ("04:02")              → parse to hours
-      // Heuristic for the numeric case: anything > 24 is minutes (nobody
-      // works > 24 hours in a single shift; the largest legitimate
-      // hour value we'd ever see is ~16).
-      const normaliseDuration = (raw) => {
-        if (raw == null || raw === '') return NaN;
-        const s = String(raw).trim();
-        if (s.includes(':')) {
-          const [h, m] = s.split(':').map(Number);
-          if (Number.isFinite(h) && Number.isFinite(m)) return h + (m / 60);
-        }
-        const n = parseFloat(s);
-        if (!Number.isFinite(n)) return NaN;
-        return n > 24 ? n / 60 : n;
-      };
-      // Belt-and-suspenders: when timeIn + timeOut are both present, compute
-      // duration from those instead — Radius's Duration column has been
-      // unreliable across export versions.
-      const minutesFromHHMM = (str) => {
-        if (!str) return null;
-        const m = String(str).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?$/);
-        if (!m) return null;
-        let h = parseInt(m[1], 10);
-        const min = parseInt(m[2], 10);
-        const ampm = (m[3] || '').toUpperCase();
-        if (ampm === 'PM' && h !== 12) h += 12;
-        if (ampm === 'AM' && h === 12) h = 0;
-        return h * 60 + min;
-      };
-      const hoursFromTimes = (inStr, outStr) => {
-        const a = minutesFromHHMM(inStr);
-        const b = minutesFromHHMM(outStr);
-        if (a == null || b == null) return null;
-        let diff = b - a;
-        if (diff < 0) diff += 24 * 60; // shift crossed midnight
-        return diff / 60;
-      };
-
-      const parsed = [];
-      for (let i = headerIndex + 1; i < rows.length; i++) {
-        const row = rows[i];
-        const name    = String(row[colMap.name] || '').trim();
-        const dateRaw = String(row[colMap.date] || '').trim();
-        const timeIn  = String(row[colMap.timeIn] || '').trim();
-        const timeOut = String(row[colMap.timeOut] || '').trim();
-        const fromTimes = hoursFromTimes(timeIn, timeOut);
-        const fromCol   = normaliseDuration(row[colMap.duration]);
-        // Prefer the time-in / time-out computation when we have both
-        // (most accurate). Fall back to the (normalised) Duration column
-        // when times are missing or unparseable.
-        const derivedHours = Number.isFinite(fromTimes) ? fromTimes
-                           : Number.isFinite(fromCol)   ? fromCol
-                           : NaN;
-        // Signed in, never signed out.
-        //
-        // These rows used to die right here: no Time Out meant no duration,
-        // `Number.isFinite` was false, and `continue` threw the row away —
-        // so the shift matched nothing and the payroll table said "Not in
-        // Radius", i.e. *they never came in*. Someone who worked a full day
-        // read as a no-show. Now the row survives, carrying zero hours
-        // (we genuinely don't know them yet) and a flag saying why.
-        //
-        // Hours stay at zero even if the Duration column happens to hold
-        // something: a duration without a tap-out isn't evidence, and
-        // guessing here would put an invented number into payroll.
-        const openPunch = isOpenPunch({ timeIn, timeOut });
-        const actualHours = openPunch ? 0 : derivedHours;
-        // attendanceId is optional — we keep the existing "must be numeric"
-        // filter when the column is present, since it's how Radius marks
-        // real rows vs total/summary rows. If the column isn't there we
-        // fall back to "has a parseable duration", which is just as good.
-        const attendanceId = colMap.attendanceId >= 0 ? row[colMap.attendanceId] : null;
-        if (colMap.attendanceId >= 0) {
-          if (typeof attendanceId !== 'number' || isNaN(attendanceId)) continue;
-        }
-
-        if (!name) continue;
-        if (!dateRaw) continue;
-        if (!openPunch && !Number.isFinite(actualHours)) continue;
-
-        // Parse DD/MM/YYYY → YYYY-MM-DD
-        if (!dateRaw.includes('/')) continue;
-        const parts = dateRaw.split('/');
-        if (parts.length !== 3) continue;
-        const [d, m, y] = parts;
-        const dateStr = `${y.trim()}-${String(m.trim()).padStart(2,'0')}-${String(d.trim()).padStart(2,'0')}`;
-
-        parsed.push({ name, date: dateStr, timeIn, timeOut, actualHours, openPunch });
-      }
-
-      if (parsed.length === 0) {
-        setRadiusError('No valid entries found. Make sure this is the Radius Employee Timesheet export.');
-        return;
-      }
-      setRadiusData(parsed);
+      setRadiusData(entries);
     } catch (err) {
       setRadiusError('Failed to parse file. Make sure it is the Radius Excel export.');
       console.error(err);
@@ -5197,6 +5067,11 @@ export default function Admin() {
     const out = [];
     for (const person of comparisonSummary.perPerson || []) {
       for (const s of person.shiftComparisons || []) {
+        // 'open' means the shift has ended and there is still no tap-out.
+        // 'in-progress' (they're at work right now) is excluded by that check
+        // — a real export taken at 4pm had 14 of its 17 open punches in that
+        // state, and emailing them would have asked people at their desks to
+        // confirm they'd gone home.
         if (!s || s.signOutState !== 'open' || s.noShow) continue;
         out.push({ person: person.name, userId: s.userId, shift: s, row: s.actual });
       }
@@ -5466,7 +5341,7 @@ export default function Admin() {
             // How the clock data actually stands for this row. Four states
             // used to collapse into one boolean, which is why "signed in but
             // never signed out" was indistinguishable from "never came in".
-            const soState = signOutState({ match, shift: s, isFuture });
+            const soState = signOutState({ match, shift: s, isFuture, now: new Date() });
 
             // An open punch contributes 0 raw hours (we don't know them).
             // Once the instructor confirms their sign-out we DO know them,
@@ -7919,6 +7794,17 @@ export default function Admin() {
                                     <span className={`font-medium ${isNoShow ? 'text-gray-400' : 'text-red-500'}`}>
                                       {isNoShow ? 'No clock-in — no show' : 'Not in Radius'}
                                     </span>
+                                  ) : s.signOutState === 'in-progress' ? (
+                                    // Clocked in, shift not finished yet. Not a
+                                    // problem and not chased — they're at work.
+                                    <div>
+                                      <span className="inline-flex items-center gap-1 rounded bg-sky-100 px-2 py-0.5 text-[11px] font-semibold text-sky-800 ring-1 ring-inset ring-sky-300">
+                                        On shift now
+                                      </span>
+                                      <div className="mt-1 text-[11px] text-gray-500 tabular-nums">
+                                        in {fmt12h(normalizeTimeToHHMM(s.actual.timeIn))}
+                                      </div>
+                                    </div>
                                   ) : s.signOutState === 'open' ? (
                                     // Signed in, never signed out. AMBER, not red,
                                     // and worded so it can't be misread as absence:
@@ -8004,6 +7890,7 @@ export default function Admin() {
                                     : s.missingFromRadius ? (showRedFlag ? '⚠ missing' : 'missing')
                                     // No sign-out means no duration to compare
                                     // against — a diff here would be fiction.
+                                    : s.signOutState === 'in-progress' ? 'on shift'
                                     : s.signOutState === 'open' ? 'no sign-out'
                                     : s.shiftDiff == null ? '—'
                                     : s.shiftDiff > 0 ? `+${s.shiftDiff.toFixed(2)}h` : `${s.shiftDiff.toFixed(2)}h`}

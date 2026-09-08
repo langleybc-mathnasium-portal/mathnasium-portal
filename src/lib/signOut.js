@@ -27,6 +27,19 @@
 /** How long an emailed confirm link stays good. */
 export const SIGNOUT_TTL_DAYS = 14;
 
+/**
+ * How long after a shift's scheduled end we wait before calling a missing
+ * tap-out a missed tap-out.
+ *
+ * This is not padding for its own sake. A real export taken at 4pm held 17
+ * open punches and FOURTEEN of them were people still on the floor — they
+ * hadn't signed out because they hadn't left. Emailing those fourteen to
+ * ask them to confirm they'd gone home would have been both wrong and
+ * faintly insulting. The grace also covers the ordinary case of someone
+ * who finishes at 7:00 and taps out at 7:06.
+ */
+export const SIGNOUT_GRACE_MINUTES = 30;
+
 /** Who supplied a sign-out time. Stored on the shift as `signOutConfirmedBy`. */
 export const CONFIRMED_BY_INSTRUCTOR = 'instructor';
 export const CONFIRMED_BY_ADMIN = 'admin';
@@ -122,14 +135,40 @@ export function effectiveSignOut(row, shift) {
  *   'self-confirmed' tapped in, and the instructor supplied the sign-out
  *   'complete'      a full Radius punch
  */
-export function signOutState({ match, shift, isFuture = false }) {
+export function signOutState({ match, shift, isFuture = false, now = new Date() }) {
   if (!match) return isFuture ? 'upcoming' : 'absent';
   if (toMinutes(match.timeOut) != null) return 'complete';
   if (toHHMM(shift?.signOutConfirmedTime)) return 'self-confirmed';
-  return 'open';
+  return isShiftOver(shift, { now }) ? 'open' : 'in-progress';
 }
 
-/** Rows the admin can send a confirm request for: open, and already past. */
+/**
+ * Has this shift finished (plus the grace period)?
+ *
+ * Built as a local Date from the shift's own date + end time. That is
+ * correct here because this runs in the admin's browser, which sits in
+ * centre-local time — the same wall clock `shift.date` and `shift.endTime`
+ * are written in. Deliberately NOT `new Date(shift.date)`, which parses a
+ * bare YYYY-MM-DD as UTC midnight and lands on the previous evening in
+ * Pacific.
+ */
+export function isShiftOver(shift, { now = new Date(), graceMinutes = SIGNOUT_GRACE_MINUTES } = {}) {
+  if (!shift?.date) return false;
+  const [y, m, d] = String(shift.date).split('-').map(Number);
+  if (!y || !m || !d) return false;
+  const endMin = toMinutes(shift.endTime);
+  const end = new Date(y, m - 1, d, 0, 0, 0, 0);
+  // No readable end time — treat the shift as over at end of its own day
+  // rather than never, so an old row can still be chased up.
+  end.setMinutes(endMin == null ? 23 * 60 + 59 : endMin);
+  return now.getTime() >= end.getTime() + graceMinutes * 60000;
+}
+
+/**
+ * Rows the admin can send a confirm request for.
+ *
+ * 'in-progress' is excluded on purpose — those people are still at work.
+ */
 export function needsSignOutRequest(state) {
   return state === 'open';
 }
@@ -208,6 +247,9 @@ export function newSignOutToken(cryptoObj = globalThis.crypto) {
  */
 export function payrollNeedsReview(s) {
   if (!s || s.noShow || s.isFuture || s.payrollResolved) return false;
+  // Someone still on the floor is not an exception to chase — they simply
+  // haven't finished yet.
+  if (s.signOutState === 'in-progress') return false;
   if (s.shiftDiscrepancy || s.missingFromRadius) return true;
   return s.signOutState === 'open' || s.signOutState === 'self-confirmed';
 }

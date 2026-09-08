@@ -95,10 +95,19 @@ describe('effectiveSignOut', () => {
 describe('signOutState', () => {
   const open = { timeIn: '09:00', timeOut: '' };
   const full = { timeIn: '09:00', timeOut: '17:00' };
+  // A shift that finished well before "now", so the grace period is spent
+  // and a missing tap-out is genuinely missing rather than in progress.
+  const ENDED = { date: '2026-09-02', endTime: '17:00' };
+  const NOW = new Date(2026, 8, 8, 12, 0);
 
   it('separates "never clocked in" from "never clocked out" — the whole bug', () => {
-    expect(signOutState({ match: null, shift: {} })).toBe('absent');
-    expect(signOutState({ match: open, shift: {} })).toBe('open');
+    expect(signOutState({ match: null, shift: ENDED, now: NOW })).toBe('absent');
+    expect(signOutState({ match: open, shift: ENDED, now: NOW })).toBe('open');
+  });
+
+  it('but someone still on shift is neither — they just haven\'t left yet', () => {
+    const today = { date: '2026-09-08', endTime: '19:00' };
+    expect(signOutState({ match: open, shift: today, now: NOW })).toBe('in-progress');
   });
 
   it('a future shift with no punch is upcoming, not absent', () => {
@@ -106,16 +115,16 @@ describe('signOutState', () => {
   });
 
   it('becomes self-confirmed once the instructor supplies a time', () => {
-    expect(signOutState({ match: open, shift: { signOutConfirmedTime: '17:00' } })).toBe('self-confirmed');
+    expect(signOutState({ match: open, shift: { ...ENDED, signOutConfirmedTime: '17:00' }, now: NOW })).toBe('self-confirmed');
   });
 
   it('a complete punch stays complete even if a confirmation exists', () => {
-    expect(signOutState({ match: full, shift: { signOutConfirmedTime: '18:00' } })).toBe('complete');
+    expect(signOutState({ match: full, shift: { ...ENDED, signOutConfirmedTime: '18:00' }, now: NOW })).toBe('complete');
   });
 
   it('only open rows are worth emailing about', () => {
     expect(needsSignOutRequest('open')).toBe(true);
-    for (const s of ['absent', 'upcoming', 'complete', 'self-confirmed']) {
+    for (const s of ['absent', 'upcoming', 'complete', 'self-confirmed', 'in-progress']) {
       expect(needsSignOutRequest(s)).toBe(false);
     }
   });
@@ -210,11 +219,13 @@ describe('newSignOutToken', () => {
 describe('the regression this feature exists for', () => {
   it('an open punch no longer reads as "never showed up"', () => {
     const row = { name: 'Kaitlyn', date: '2026-09-06', timeIn: '9:02 AM', timeOut: '' };
+    const shift = { date: '2026-09-06', endTime: '18:00' };
+    const now = new Date(2026, 8, 8, 12, 0);            // two days later
     // Before: the row was dropped at parse time, so match was null...
-    expect(signOutState({ match: null, shift: {} })).toBe('absent');
+    expect(signOutState({ match: null, shift, now })).toBe('absent');
     // ...and now it survives, and says what actually happened.
     expect(isOpenPunch(row)).toBe(true);
-    expect(signOutState({ match: row, shift: {} })).toBe('open');
+    expect(signOutState({ match: row, shift, now })).toBe('open');
     // Once she confirms 6pm, the shift has real hours again.
     expect(resolvedActualHours(row, {
       signOutConfirmedTime: '18:00', signOutConfirmedBy: CONFIRMED_BY_INSTRUCTOR,
