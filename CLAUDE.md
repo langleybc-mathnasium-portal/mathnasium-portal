@@ -457,6 +457,59 @@ classic page renders identically whether the block exists or not. Muted
 text is 5.1:1 on paper — the classic `text-gray-400` is 2.54:1, which
 fails WCAG AA.
 
+### Which side am I on, and when do I move
+
+Neeru assigns instructors to a side — High School or Elementary — for each
+half hour, in the Student Scheduler, before the day. Until now the only
+copies were her screen and the printed sheet, so instructors walked in
+asking out loud. The floor-staff home now shows it under their shift.
+
+`centers/{id}/schedulerInstructorAssignments/{YYYY-MM-DD}` is a flat map
+keyed `"<side>|<HH:MM>"` holding **display names**:
+
+```
+{ "EM|15:00": ["Kaitlyn MacDonald", "Jason Soo"],
+  "HS|17:00": ["Luke Huang", "Jason Soo"] }
+```
+
+Verified against all 73 live documents: sides are only ever `HS` / `EM`,
+slots are half-hourly 10:00–18:30, no other keys appear, and slots are
+sparse (an unassigned half hour has no entry).
+
+`src/lib/sideAssignments.js` collapses consecutive same-side slots into
+blocks, so eight half hours read as "3:00–5:00 Elementary, 5:00–6:30 High
+School". Its tests run against a **real day copied out of Firestore**.
+
+Three rules that are easy to get wrong, all pinned by tests:
+
+- **A gap does not merge.** Unassigned 4:00–4:30 with Elementary either
+  side is two blocks, and is NOT a switch — "you move to Elementary at
+  4:30" when they never left would be nonsense.
+- **Before the first block, nothing is a "move".** Somebody on one side all
+  day was being told "you move to High School at 5:00" while still at home.
+  `nextSwitch` returns null before the day starts; a gap mid-day still
+  points somewhere, because that IS useful.
+- **A wrong side is worse than no side.** Matching is exact display name,
+  which covers every current member of staff. A bare first name ("Bri",
+  "Sofie" appear historically) matches ONLY when one person at the centre
+  has it; ambiguous entries are ignored rather than guessed, because
+  someone told the wrong side walks to the wrong end of the room and
+  trusts it.
+
+The roster needed for that disambiguation is fetched **only** when the
+exact pass finds nothing, keeping ~50 user reads off the common path.
+
+**Rules change:** `schedulerInstructorAssignments` read widened from
+`canRunFloor` to `canRunFloor || isMemberAt(centerId)` — any staff member
+of that centre. It is the least sensitive document in the scheduler (staff
+names and a side; no students, contacts or pay), and every signed-in user
+can already read all of `users` and `shifts`, so it exposes strictly less
+than what is already open. Writes are unchanged. `isMemberAt` is a new
+helper meaning "you work here", deliberately broader than any title.
+Covered by five tests in `tests/rules/shifts.rules.test.js`, including that
+another centre's manager is still refused and that instructors cannot
+write.
+
 ### Render tests exist now, and why
 
 `src/pages/homes/InstructorHome.render.test.jsx` renders the page in jsdom

@@ -41,6 +41,12 @@ vi.mock('firebase/firestore', () => ({
   },
 }));
 
+// The side sheet comes through scheduler-data's document watcher.
+const sideSheet = { current: {} };
+vi.mock('../../lib/scheduler-data', () => ({
+  watchInstructorAssignments: (_c, _d, cb) => { cb(sideSheet.current); return () => {}; },
+}));
+
 const authValue = { current: {} };
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => authValue.current }));
 
@@ -71,7 +77,8 @@ const draw = () => render(<MemoryRouter><InstructorHome /></MemoryRouter>);
 
 beforeEach(() => {
   authValue.current = { ...BASE_AUTH };
-  for (const k of ['shifts', 'openShifts', 'announcements']) snapshots[k] = [];
+  sideSheet.current = {};
+  for (const k of ['shifts', 'openShifts', 'announcements', 'users']) snapshots[k] = [];
 });
 afterEach(() => { cleanup(); });
 
@@ -181,5 +188,97 @@ describe('mobile', () => {
     // has to exist on the page itself.
     draw();
     expect(screen.getByText(/Classic view/)).toBeTruthy();
+  });
+});
+
+describe('which side am I on, and when do I move', () => {
+  // A real day out of Neeru's sheet. Jason Soo is Elementary 3:00–5:00 and
+  // High School 5:00–6:30 — the transfer instructors currently have to ask
+  // about out loud.
+  const REAL_DAY = {
+    'EM|15:00': ['Jason Soo', 'Kaitlyn MacDonald'],
+    'EM|15:30': ['Jason Soo', 'Kaitlyn MacDonald'],
+    'EM|16:00': ['Jason Soo', 'Kaitlyn MacDonald'],
+    'EM|16:30': ['Jason Soo', 'Kaitlyn MacDonald'],
+    'EM|17:00': ['Kaitlyn MacDonald'],
+    'EM|17:30': ['Kaitlyn MacDonald'],
+    'HS|17:00': ['Jason Soo', 'Luke Huang'],
+    'HS|17:30': ['Jason Soo', 'Luke Huang'],
+    'HS|18:00': ['Jason Soo', 'Luke Huang'],
+  };
+
+  const asJason = () => {
+    authValue.current = {
+      ...BASE_AUTH,
+      profile: { uid: 'u1', displayName: 'Jason Soo' },
+    };
+    snapshots.shifts = [shift({ date: todayStr(), startTime: '15:00', endTime: '18:30' })];
+    sideSheet.current = REAL_DAY;
+  };
+
+  it('shows the blocks, collapsed — not eight half hours', () => {
+    asJason();
+    draw();
+    expect(screen.getByText('3:00 PM – 5:00 PM')).toBeTruthy();
+    expect(screen.getByText('5:00 PM – 6:30 PM')).toBeTruthy();
+    // "High School" legitimately appears twice — the block label and the
+    // "you move to" sentence — so assert on presence, not uniqueness.
+    expect(screen.getAllByText('Elementary').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('High School').length).toBeGreaterThan(0);
+    // The half-hour boundaries inside a block must NOT appear.
+    expect(screen.queryByText('3:00 PM – 3:30 PM')).toBeNull();
+  });
+
+  it('says in words when the transfer happens', () => {
+    asJason();
+    draw();
+    const line = screen.getByText(/You move to/);
+    expect(line.textContent).toBe('You move to High School at 5:00 PM.');
+  });
+
+  it('says so plainly when there is no transfer at all', () => {
+    authValue.current = {
+      ...BASE_AUTH, profile: { uid: 'u2', displayName: 'Luke Huang' },
+    };
+    snapshots.shifts = [shift({ date: todayStr(), startTime: '17:00', endTime: '18:30' })];
+    sideSheet.current = REAL_DAY;
+    draw();
+    expect(screen.getByText(/the whole shift/).textContent)
+      .toContain('High School');
+    // He never changes side, so nothing may claim he does — this caught a
+    // real bug where somebody yet to start their shift was told they were
+    // "moving to" the only side they were ever on.
+    expect(screen.queryByText(/You move to/)).toBeNull();
+  });
+
+  it('tells you when sides have not been posted yet', () => {
+    snapshots.shifts = [shift({ date: todayStr() })];
+    sideSheet.current = {};          // Neeru hasn't filled it in
+    draw();
+    expect(screen.getByText(/aren't posted for today yet/)).toBeTruthy();
+  });
+
+  it('stays quiet about an unposted FUTURE day', () => {
+    // A shift next week has no sides yet and that is normal — a permanent
+    // "not posted" note would train people to ignore this section.
+    snapshots.shifts = [shift({ date: '2099-09-12' })];
+    sideSheet.current = {};
+    draw();
+    expect(screen.queryByText(/aren't posted/)).toBeNull();
+  });
+
+  it('shows nothing for somebody not on the sheet', () => {
+    snapshots.shifts = [shift({ date: todayStr() })];
+    sideSheet.current = { 'EM|15:00': ['Someone Else'] };
+    draw();
+    expect(screen.queryByText('Elementary')).toBeNull();
+    // ...and says why, since it IS today.
+    expect(screen.getByText(/aren't posted for today yet/)).toBeTruthy();
+  });
+
+  it('survives a malformed sheet without taking the page down', () => {
+    snapshots.shifts = [shift({ date: todayStr() })];
+    sideSheet.current = { garbage: ['Kaitlyn MacDonald'], 'EM|nope': 'x' };
+    expect(() => draw()).not.toThrow();
   });
 });

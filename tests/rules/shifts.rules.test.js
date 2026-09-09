@@ -210,6 +210,47 @@ describe('openShifts', () => {
   });
 });
 
+describe('schedulerInstructorAssignments — which side am I on', () => {
+  const PATH = `centers/${CENTRE}/schedulerInstructorAssignments`;
+  const DAY = { 'EM|15:00': ['Inst One'], 'HS|17:00': ['Inst One'] };
+
+  it('lets any instructor at this centre read their own rota', async () => {
+    // The widened rule. Before it, the answer to "which side am I on
+    // today?" existed only on the director's screen and a printed sheet.
+    await seed(PATH, '2026-09-01', DAY);
+    for (const uid of ['inst1', 'inst2', 'trainee1', 'vol1']) {
+      await assertSucceeds(getDoc(doc(as(uid), PATH, '2026-09-01')));
+    }
+  });
+
+  it('still lets floor staff and leadership read it', async () => {
+    await seed(PATH, '2026-09-01', DAY);
+    for (const uid of ['owner1', 'admin1', 'mgr1', 'host1']) {
+      await assertSucceeds(getDoc(doc(as(uid), PATH, '2026-09-01')));
+    }
+  });
+
+  it('does NOT let staff from another centre read it', async () => {
+    // The read widened to members of THIS centre, not to everybody signed in.
+    await seed(PATH, '2026-09-01', DAY);
+    await assertFails(getDoc(doc(as('mgrOther'), PATH, '2026-09-01')));
+  });
+
+  it('does not let an instructor write it — reading is not editing', async () => {
+    // Neeru assigns sides. An instructor moving themselves to the other
+    // side of the room would be exactly the wrong outcome of this change.
+    for (const uid of ['inst1', 'trainee1', 'vol1']) {
+      await assertFails(setDoc(doc(as(uid), PATH, '2026-09-02'), DAY));
+    }
+  });
+
+  it('still lets the people who staff the floor write it', async () => {
+    for (const uid of ['owner1', 'admin1', 'mgr1', 'host1']) {
+      await assertSucceeds(setDoc(doc(as(uid), PATH, '2026-09-02'), DAY));
+    }
+  });
+});
+
 describe('schedulerTemplates — saved staffing shapes', () => {
   const tpl = { name: 'Term time', config: { minPerDay: 8, maxPerDay: 11, perDay: {} }, centerId: CENTRE };
   const path = `centers/${CENTRE}/schedulerTemplates`;

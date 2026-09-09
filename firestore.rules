@@ -287,6 +287,16 @@ service cloud.firestore {
     // tier plus Lead instructors, Managers, and Hosts. Used for Student
     // Scheduler working data (student names, check-ins, walk-ins) — the
     // people who need it to do their job, and nobody else.
+    // Is this person on the staff of this centre at all? Deliberately
+    // broader than any title: it is the "you work here" check, used where
+    // a document is roster information rather than management data.
+    function isMemberAt(centerId) {
+      return profileExists() && (
+        centerId in profile().get('centerIds', [])
+        || ('centerMemberships' in profile() && centerId in profile().centerMemberships)
+      );
+    }
+
     function canRunFloor(centerId) {
       return isOwnerLike() || isSuperAdmin() || isAdmin()
           || isLeadAt(centerId) || isManagerAt(centerId) || isHostAt(centerId)
@@ -382,8 +392,21 @@ service cloud.firestore {
 
       // Per-day instructor assignments (slot -> staff names). Leads staff
       // the floor minute by minute, so they write here.
+      //
+      // READ IS OPEN TO ANY STAFF MEMBER OF THIS CENTRE, which is wider
+      // than the rest of the scheduler. The reason: this document is the
+      // answer to "which side am I on today, and when do I switch?", and
+      // instructors were walking in and asking out loud because the only
+      // copies were Neeru's screen and the printed sheet. Withholding a
+      // person's own rota from them to protect it makes no sense.
+      //
+      // It is also the least sensitive document in the scheduler: staff
+      // names and a side, no students, no contact details, no pay. Every
+      // signed-in user can already read the whole `users` and `shifts`
+      // collections, so this exposes strictly less than what is open today.
+      // Writes are unchanged — still floor staff only.
       match /schedulerInstructorAssignments/{dateId} {
-        allow read:  if canRunFloor(centerId);
+        allow read:  if canRunFloor(centerId) || isMemberAt(centerId);
         allow write: if isOwnerLike() || isSuperAdmin() || isAdmin() || isLeadAt(centerId) || isManagerAt(centerId) || isHostAt(centerId);
       }
 
