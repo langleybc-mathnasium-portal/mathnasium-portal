@@ -2,7 +2,6 @@ import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
-import HomeSwitch from './pages/HomeSwitch';
 import ErrorBoundary from './components/ErrorBoundary';
 import Layout from './components/Layout';
 import NotifyHost from './components/NotifyHost';
@@ -54,8 +53,7 @@ const AvailabilityLog           = lazy(() => import('./pages/AvailabilityLog'));
 // This keeps the existing app surface unchanged for current owners while
 // the same URL doubles as the front door for prospective franchisees.
 function RootGate() {
-  const auth = useAuth();
-  const { user, loading, isOwner, isAdminAssistant, isSuperAdmin, centerConfig } = auth;
+  const { user, loading, isOwner, isAdminAssistant, isSuperAdmin, centerConfig } = useAuth();
   if (loading) return null;
   if (!user) return <Landing />;
   // Owners (and AA) of a centre that hasn't completed onboarding get
@@ -73,10 +71,7 @@ function RootGate() {
   if (ownerLike && !isSuperAdmin && !centerConfig?.completedOnboarding) {
     return <Navigate to="/onboarding" replace />;
   }
-  // HomeSwitch serves the classic Home unless this person opted in to the
-  // role-shaped one, and carries its own error boundary so a failure there
-  // can never take the sidebar (and its "back to classic" toggle) with it.
-  return <ProtectedRoute><Layout><HomeSwitch /></Layout></ProtectedRoute>;
+  return <ProtectedRoute><Layout><Home /></Layout></ProtectedRoute>;
 }
 
 function NotFound() {
