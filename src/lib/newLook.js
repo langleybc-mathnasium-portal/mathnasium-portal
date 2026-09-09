@@ -1,27 +1,31 @@
 /**
- * newLook.js — the opt-in switch for the role-shaped home pages.
+ * newLook.js — the opt-in phone-first home for floor staff.
  *
- * WHAT THIS IS
- *   The portal has one front door, shaped like an owner's tool. An
- *   instructor gets it on a phone with most of it locked; a host gets a
- *   page built for someone sitting down doing payroll, while standing at a
- *   desk. "New look" replaces the single Home with four, one per job.
+ * WHAT THIS IS NOW
+ *   A single alternative Home for the people who work shifts: instructors,
+ *   leads, trainees and volunteers. Their question is "am I on today, and
+ *   does anyone need anything from me?", they are asking it on a phone, and
+ *   the classic Home answers it through a sidebar built for an owner's
+ *   eighteen links behind a hamburger menu.
  *
- * WHY IT IS OPT-IN AND NOT A DEPLOY
- *   33 people use this portal during shifts. Nobody should meet a
- *   redesigned tool mid-session because a deploy landed. Classic stays the
- *   default; a person turns this on for themselves and it sticks. That also
- *   makes reverting a non-event — turning it off is a click, not a release.
+ * WHAT IT USED TO BE, AND WHY IT ISN'T
+ *   It started as four doors — owner, director, host, instructor. The
+ *   owner, director and host boards were removed after review: their
+ *   figures depend on live Radius reads and cross-collection queries this
+ *   app cannot yet do quickly or completely, so the numbers they showed
+ *   were not trustworthy. A dashboard that is confidently wrong is worse
+ *   than no dashboard, and leadership already has pages whose numbers are
+ *   known-good. Only the instructor door survives, because everything on
+ *   it is a direct read of that person's own shifts.
  *
- *   The git history is the second escape hatch: this all arrived as one
- *   commit, so `git revert` removes it whole.
+ *   If the Radius API in Ratio_Radius_API_Request_Brief.docx is ever
+ *   approved, the other three become worth revisiting — with real data
+ *   behind them.
  *
- * PER-UID ON PURPOSE
- *   The preference is keyed by uid, so signing out of one account and into
- *   another on the same laptop doesn't carry the setting across. That
- *   matters right now specifically: the person evaluating this is going to
- *   log in as an instructor, a host, a director and an owner in turn, and
- *   each of those should start where that role's staff would start.
+ * OFF BY DEFAULT, PER PERSON
+ *   Nobody meets a redesigned portal because a deploy landed. The
+ *   preference is keyed by uid, so signing out of one account and into
+ *   another on the same laptop does not carry it across.
  */
 
 const KEY_PREFIX = 'ratio-new-look:';
@@ -38,7 +42,7 @@ export function newLookKey(uid) {
   return `${KEY_PREFIX}${uid || 'anon'}`;
 }
 
-/** Is the new look on for this person? Off unless they turned it on. */
+/** Is it on for this person? Off unless they turned it on. */
 export function isNewLookOn(uid) {
   return read(newLookKey(uid)) === 'on';
 }
@@ -50,68 +54,29 @@ export function setNewLook(uid, on) {
 }
 
 /**
- * The four doors.
+ * Who this is for: people whose job is working shifts.
  *
- * `owner`      — outcomes. Leads, enrolment, cost against budget.
- * `director`   — the week. What is going to go wrong and who fixes it.
- * `host`       — right now. Who is on the floor, who is due, who is waiting.
- * `instructor` — am I on today, and does anyone need anything from me.
+ * `isOwnerLike` already means owner / admin-assistant / super-admin /
+ * director, and plain `admin` runs centre operations — all of them open the
+ * portal to run the centre, not to find out when they are next in, and all
+ * of them have pages whose numbers are known-good. Everyone else is floor
+ * staff: instructors, leads, managers, trainees, volunteers.
+ *
+ * Read as "not leadership" rather than a list of job titles, so a custom
+ * centre role invented in Manage Roles lands on the right side without
+ * anyone editing this file.
  */
-export const DOORS = ['owner', 'director', 'host', 'instructor'];
-
-export const DOOR_LABELS = {
-  owner:      'Centre',
-  director:   'This week',
-  host:       'Front desk',
-  instructor: 'My shifts',
-};
-
-/**
- * Every door a person is entitled to, most senior first.
- *
- * Entitlement mirrors what the app already allows — this grants nothing.
- * `canSeeAdminPanel` is the same permission that reveals the admin pages
- * today, so a centre role built in Manage Roles gets the director door
- * without anyone editing this file.
- *
- * Everyone gets `instructor`, including owners: they still have shifts, and
- * "when am I in" is a fair question for anybody.
- */
-export function doorsFor(auth = {}) {
-  const {
-    isSuperAdmin, isOwner, isDirector, isAdminAssistant,
-    isHost, canSeeAdminPanel,
-  } = auth;
-
-  const doors = [];
-  if (isSuperAdmin || isOwner) doors.push('owner');
-  if (isDirector || isAdminAssistant || canSeeAdminPanel) doors.push('director');
-  if (isHost) doors.push('host');
-  doors.push('instructor');
-  return doors.filter((d, i) => doors.indexOf(d) === i);
+export function canUseNewLook(auth = {}) {
+  const { isOwnerLike, isAdmin, isSuperAdmin, isOwner, isDirector, isAdminAssistant } = auth;
+  const leadership = isOwnerLike
+    || isSuperAdmin || isOwner || isDirector || isAdminAssistant || isAdmin;
+  return !leadership;
 }
 
 /**
- * Which door someone lands on.
- *
- * The most senior one they hold — an owner opening the portal wants the
- * centre, not their own next shift. A saved preference wins over that, so
- * Rahul (host AND instructor) can decide the desk board is his home.
+ * Should this person actually be shown it right now?
+ * Both eligible AND opted in — the check every caller wants.
  */
-export function resolveDoor(auth = {}, preferred = null) {
-  const allowed = doorsFor(auth);
-  if (preferred && allowed.includes(preferred)) return preferred;
-  return allowed[0];
-}
-
-const DOOR_KEY_PREFIX = 'ratio-door:';
-
-export function readPreferredDoor(uid) {
-  const v = read(`${DOOR_KEY_PREFIX}${uid || 'anon'}`);
-  return DOORS.includes(v) ? v : null;
-}
-export function setPreferredDoor(uid, door) {
-  if (!DOORS.includes(door)) return null;
-  write(`${DOOR_KEY_PREFIX}${uid || 'anon'}`, door);
-  return door;
+export function newLookActive(auth = {}) {
+  return canUseNewLook(auth) && isNewLookOn(auth?.profile?.uid);
 }

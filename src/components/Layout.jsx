@@ -6,7 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 import Logo from './Logo';
 import RatioLogo from './RatioLogo';
 import MigrationBanner from './MigrationBanner';
-import { isNewLookOn, setNewLook } from '../lib/newLook';
+import { canUseNewLook, isNewLookOn, setNewLook } from '../lib/newLook';
 import CenterSwitcher from './CenterSwitcher';
 import {
   House, Megaphone, CalendarDays, MessageSquare, Settings, LogOut, Menu, X, Bell,
@@ -45,7 +45,12 @@ const ROLE_LABEL = {
 };
 
 export default function Layout({ children }) {
-  const { profile, mySubRoles, logout, activeCenterId, isSuperAdmin, isOwner, isDirector, isAdminAssistant, isAdmin, isLead, isVolunteer, canTakeShifts, canSeeAdminPanel, canManageOperations } = useAuth();
+  const auth = useAuth();
+  const { profile, mySubRoles, logout, activeCenterId, isSuperAdmin, isOwner, isDirector, isAdminAssistant, isAdmin, isLead, isVolunteer, canTakeShifts, canSeeAdminPanel, canManageOperations } = auth;
+  // The phone-first home is for people whose job is working shifts.
+  // Leadership keeps the classic pages, whose numbers are known-good.
+  const newLookEligible = canUseNewLook(auth);
+  const newLookOn = newLookEligible && isNewLookOn(profile?.uid);
   const location = useLocation();
   const [open, setOpen] = useState(false);
   const [openShifts, setOpenShifts] = useState([]);
@@ -438,18 +443,20 @@ export default function Layout({ children }) {
               in the nav: it changes ONE page (Home), and dressing it up as a
               destination would oversell it. Off by default for everybody —
               nobody meets a redesigned portal because a deploy landed. */}
-          <button
-            onClick={() => { setNewLook(profile?.uid, !isNewLookOn(profile?.uid)); window.location.reload(); }}
-            className="mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-gray-400 transition-colors hover:bg-gray-700 hover:text-white"
-            title="Preview the new role-based home page. Nothing else in the portal changes, and you can switch back here.">
-            <Sparkles size={16} />
-            <span className="flex-1">{isNewLookOn(profile?.uid) ? 'Back to classic home' : 'Try the new home'}</span>
-            {!isNewLookOn(profile?.uid) && (
-              <span className="rounded-full bg-gray-700 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-gray-300">
-                New
-              </span>
-            )}
-          </button>
+          {newLookEligible && (
+            <button
+              onClick={() => { setNewLook(profile?.uid, !newLookOn); window.location.reload(); }}
+              className="mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-gray-400 transition-colors hover:bg-gray-700 hover:text-white"
+              title="A home page built for a phone: your next shift, anything Ratio needs from you, and open shifts. Nothing else in the portal changes, and you can switch back here.">
+              <Sparkles size={16} />
+              <span className="flex-1">{newLookOn ? 'Back to classic home' : 'Try the new home'}</span>
+              {!newLookOn && (
+                <span className="rounded-full bg-gray-700 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-gray-300">
+                  New
+                </span>
+              )}
+            </button>
+          )}
           <button onClick={logout} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-400 transition-colors hover:bg-gray-700 hover:text-white">
             <LogOut size={16} /> Sign Out
           </button>
@@ -478,7 +485,55 @@ export default function Layout({ children }) {
         <main className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8">
           {children}
         </main>
+
+        {/* Bottom tabs — phones only, and only for floor staff on the new
+            home. Instructors touch four things; reaching them through a
+            hamburger menu built for an owner's eighteen sidebar links is
+            the single worst part of the portal on a phone. `lg:hidden`
+            because the sidebar is back at that width and two navigations
+            would just compete. */}
+        {newLookOn && <MobileTabs canTakeShifts={canTakeShifts} isVolunteer={isVolunteer} />}
       </div>
     </div>
+  );
+}
+
+/**
+ * The four things a person working a shift actually opens.
+ *
+ * Volunteers get no team chat (they work the shifts they're given and ask
+ * to cancel — see canTakeShifts in AuthContext), and anyone who can't pick
+ * up shifts has no use for the board, so both tabs are conditional rather
+ * than shown-and-broken.
+ */
+function MobileTabs({ canTakeShifts, isVolunteer }) {
+  const location = useLocation();
+  const tabs = [
+    { to: '/', label: 'Today', icon: House, exact: true },
+    { to: '/schedule', label: 'Schedule', icon: CalendarDays },
+    canTakeShifts && { to: '/shift-board', label: 'Shifts', icon: Briefcase },
+    !isVolunteer && { to: '/chat', label: 'Chat', icon: MessageSquare },
+  ].filter(Boolean);
+
+  return (
+    <nav
+      className="nl-tabbar no-print sticky bottom-0 z-20 grid border-t bg-white lg:hidden"
+      style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))`, borderColor: '#e5e7eb' }}
+      aria-label="Main">
+      {tabs.map(t => {
+        const active = t.exact ? location.pathname === t.to : location.pathname.startsWith(t.to);
+        return (
+          <Link key={t.to} to={t.to}
+            aria-current={active ? 'page' : undefined}
+            // min-h-[56px] keeps every target comfortably past the 44px
+            // minimum even on a small phone.
+            className="flex min-h-[56px] flex-col items-center justify-center gap-1 px-1 py-2 text-[10.5px] font-semibold transition-colors"
+            style={{ color: active ? '#C8102E' : '#6E625B' }}>
+            <t.icon size={19} strokeWidth={active ? 2.4 : 2} />
+            {t.label}
+          </Link>
+        );
+      })}
+    </nav>
   );
 }

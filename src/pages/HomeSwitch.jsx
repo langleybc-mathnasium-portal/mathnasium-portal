@@ -1,25 +1,27 @@
 import { Component, Suspense, lazy } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { isNewLookOn, setNewLook } from '../lib/newLook';
+import { canUseNewLook, isNewLookOn, setNewLook } from '../lib/newLook';
 import Home from './Home';
 
-const NewHome = lazy(() => import('./NewHome'));
+const InstructorHome = lazy(() => import('./homes/InstructorHome'));
 
 /**
- * HomeSwitch — classic Home, or the opt-in role-shaped one, with a floor
- * under it.
+ * HomeSwitch — classic Home, or the phone-first one for floor staff, with a
+ * floor under it.
  *
  * WHY THE LOCAL BOUNDARY MATTERS MORE THAN IT LOOKS
  *   The app-wide ErrorBoundary (App.jsx) replaces the ENTIRE UI with an
- *   error card — sidebar included. So a render error in a new home page
- *   would take the "Back to classic" toggle down with it, and the only way
- *   out would be a deploy. That is precisely the situation this feature is
- *   supposed to be immune to.
+ *   error card — sidebar included. So a render error here would take the
+ *   "back to classic" toggle down with it, and the only way out would be a
+ *   deploy. That is precisely what this feature must be immune to.
  *
- *   So the new home gets its own boundary. If it throws: the classic Home
- *   renders in its place, the opt-in is switched back off so a reload
- *   doesn't loop straight back into the broken page, and a quiet line
- *   explains what happened. The portal keeps working.
+ *   It has already earned its keep once: the first version of this shipped
+ *   with a crash in the (since removed) director board, and this is what
+ *   put people back on the classic Home instead of stranding them.
+ *
+ *   If it throws: the classic Home renders in its place, the opt-in is
+ *   switched back off so a reload doesn't loop into the same crash, and a
+ *   quiet line explains what happened.
  */
 class NewHomeBoundary extends Component {
   constructor(props) {
@@ -32,8 +34,7 @@ class NewHomeBoundary extends Component {
   }
 
   componentDidCatch(error, info) {
-    console.error('[NewHome] fell back to the classic home:', error, info);
-    // Disarm the opt-in so the next load isn't the same crash again.
+    console.error('[InstructorHome] fell back to the classic home:', error, info);
     try { setNewLook(this.props.uid, false); } catch { /* storage blocked */ }
   }
 
@@ -54,15 +55,16 @@ class NewHomeBoundary extends Component {
 }
 
 export default function HomeSwitch() {
-  const { profile } = useAuth();
-  const uid = profile?.uid;
+  const auth = useAuth();
+  const uid = auth.profile?.uid;
 
-  if (!isNewLookOn(uid)) return <Home />;
+  // Leadership never gets it, whatever their stored preference says.
+  if (!canUseNewLook(auth) || !isNewLookOn(uid)) return <Home />;
 
   return (
     <NewHomeBoundary uid={uid}>
       <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
-        <NewHome />
+        <InstructorHome />
       </Suspense>
     </NewHomeBoundary>
   );

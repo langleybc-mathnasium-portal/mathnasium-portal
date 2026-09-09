@@ -1,15 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
-  isNewLookOn, setNewLook, newLookKey, doorsFor, resolveDoor,
-  readPreferredDoor, setPreferredDoor, DOORS,
+  isNewLookOn, setNewLook, newLookKey, canUseNewLook, newLookActive,
 } from './newLook';
-
-/**
- * The load-bearing property here is that this GRANTS NOTHING. Door
- * entitlement has to track the permissions the app already enforces — a
- * front door that shows an instructor the owner's numbers would be a
- * permission bug wearing a redesign.
- */
 
 const store = new Map();
 beforeEach(() => {
@@ -54,97 +46,61 @@ describe('the opt-in switch', () => {
   });
 });
 
-describe('doorsFor — entitlement, not decoration', () => {
-  it('an instructor gets exactly one door', () => {
-    expect(doorsFor({ isInstructor: true })).toEqual(['instructor']);
+describe('canUseNewLook — floor staff only', () => {
+  it('includes the people it is built for', () => {
+    expect(canUseNewLook({ isInstructor: true })).toBe(true);
+    expect(canUseNewLook({ isTraining: true })).toBe(true);
+    expect(canUseNewLook({ isVolunteer: true })).toBe(true);
+    expect(canUseNewLook({ isLead: true })).toBe(true);
+    expect(canUseNewLook({ isManager: true })).toBe(true);
+    expect(canUseNewLook({ isHost: true })).toBe(true);   // a host is an instructor
   });
 
-  it('a volunteer or trainee gets the same single door', () => {
-    expect(doorsFor({ isVolunteer: true })).toEqual(['instructor']);
-    expect(doorsFor({ isTraining: true })).toEqual(['instructor']);
+  it('excludes everyone who opens the portal to run the centre', () => {
+    // Their figures need data this app cannot yet read quickly or fully,
+    // so they keep the pages whose numbers are known-good.
+    expect(canUseNewLook({ isOwner: true })).toBe(false);
+    expect(canUseNewLook({ isSuperAdmin: true })).toBe(false);
+    expect(canUseNewLook({ isDirector: true })).toBe(false);
+    expect(canUseNewLook({ isAdminAssistant: true })).toBe(false);
+    expect(canUseNewLook({ isAdmin: true })).toBe(false);
+    expect(canUseNewLook({ isOwnerLike: true })).toBe(false);
   });
 
-  it('a host gets the desk and their own shifts', () => {
-    expect(doorsFor({ isHost: true })).toEqual(['host', 'instructor']);
+  it('excludes an instructor-flagged account that is also leadership', () => {
+    // Belt and braces: the leadership flag wins, whatever else is set.
+    expect(canUseNewLook({ isInstructor: true, isDirector: true })).toBe(false);
+    expect(canUseNewLook({ isLead: true, isOwnerLike: true })).toBe(false);
   });
 
-  it('a director gets the week, and can still see their own shifts', () => {
-    expect(doorsFor({ isDirector: true })).toEqual(['director', 'instructor']);
-  });
-
-  it('an owner gets everything except the desk they do not staff', () => {
-    expect(doorsFor({ isOwner: true })).toEqual(['owner', 'instructor']);
-  });
-
-  it('an owner who is also host-capable gets the desk too', () => {
-    expect(doorsFor({ isOwner: true, isHost: true }))
-      .toEqual(['owner', 'host', 'instructor']);
-  });
-
-  it('a custom centre role with admin.panel earns the director door', () => {
-    // This is the point: a role invented in Manage Roles reaches the right
-    // door without anyone editing newLook.js.
-    expect(doorsFor({ canSeeAdminPanel: true })).toEqual(['director', 'instructor']);
-  });
-
-  it('never hands out a door twice', () => {
-    const doors = doorsFor({ isOwner: true, isDirector: true, canSeeAdminPanel: true, isHost: true });
-    expect(new Set(doors).size).toBe(doors.length);
-  });
-
-  it('every door it can return is a known door', () => {
-    const combos = [
-      { isSuperAdmin: true }, { isOwner: true }, { isDirector: true },
-      { isAdminAssistant: true }, { isHost: true }, { canSeeAdminPanel: true },
-      {}, { isVolunteer: true },
-    ];
-    for (const c of combos) {
-      for (const d of doorsFor(c)) expect(DOORS).toContain(d);
-    }
-  });
-
-  it('gives an instructor door to absolutely everyone', () => {
-    for (const c of [{ isSuperAdmin: true }, { isOwner: true }, { isDirector: true }, {}]) {
-      expect(doorsFor(c)).toContain('instructor');
-    }
+  it('treats an empty auth object as floor staff, not leadership', () => {
+    // Fails toward the safer of the two: a plain instructor view.
+    expect(canUseNewLook({})).toBe(true);
   });
 });
 
-describe('resolveDoor', () => {
-  it('lands on the most senior door held', () => {
-    expect(resolveDoor({ isOwner: true })).toBe('owner');
-    expect(resolveDoor({ isDirector: true })).toBe('director');
-    expect(resolveDoor({ isHost: true })).toBe('host');
-    expect(resolveDoor({})).toBe('instructor');
+describe('newLookActive — eligible AND opted in', () => {
+  const instructor = { profile: { uid: 'u1' }, isInstructor: true };
+  const director = { profile: { uid: 'u2' }, isDirector: true };
+
+  it('is false for an instructor who has not opted in', () => {
+    expect(newLookActive(instructor)).toBe(false);
   });
 
-  it('honours a saved preference — Rahul can make the desk his home', () => {
-    expect(resolveDoor({ isHost: true }, 'instructor')).toBe('instructor');
-    expect(resolveDoor({ isOwner: true, isHost: true }, 'host')).toBe('host');
+  it('is true once they opt in', () => {
+    setNewLook('u1', true);
+    expect(newLookActive(instructor)).toBe(true);
   });
 
-  it('ignores a preference the person is not entitled to', () => {
-    // The real guard: a saved string cannot promote anybody.
-    expect(resolveDoor({ isInstructor: true }, 'owner')).toBe('instructor');
-    expect(resolveDoor({ isHost: true }, 'director')).toBe('host');
+  it('stays false for a director even with the flag set', () => {
+    // The important one: a leftover localStorage value from before the
+    // owner/director/host boards were removed must not resurrect anything.
+    setNewLook('u2', true);
+    expect(newLookActive(director)).toBe(false);
   });
 
-  it('ignores a junk preference', () => {
-    expect(resolveDoor({ isOwner: true }, 'nonsense')).toBe('owner');
-    expect(resolveDoor({ isOwner: true }, null)).toBe('owner');
-  });
-});
-
-describe('the saved door preference', () => {
-  it('round-trips', () => {
-    setPreferredDoor('u1', 'host');
-    expect(readPreferredDoor('u1')).toBe('host');
-  });
-  it('refuses to store a door that does not exist', () => {
-    expect(setPreferredDoor('u1', 'payroll')).toBeNull();
-    expect(readPreferredDoor('u1')).toBeNull();
-  });
-  it('reads null when nothing is saved', () => {
-    expect(readPreferredDoor('nobody')).toBeNull();
+  it('survives a missing profile', () => {
+    expect(() => newLookActive({ isInstructor: true })).not.toThrow();
+    expect(newLookActive({ isInstructor: true })).toBe(false);
   });
 });

@@ -389,83 +389,80 @@ scheduled elsewhere. The `steam` / `summerCamp` buckets are **retired**
 (`ACTIVE_BUCKETS` excludes them) but the keys survive so past periods and the 58
 historical flex shifts still report.
 
-## The new look (opt-in, role-shaped home pages)
+## The new look (opt-in phone-first home for floor staff)
 
-Four front doors instead of one. The portal's single Home is shaped like an
-owner's tool; every other role receives it with most of it hidden. The
-opt-in replaces `/` with one home per job — and changes **nothing else**.
+One alternative Home for the people who work shifts — instructors, leads,
+trainees, volunteers. Their question is "am I on today, and does anyone
+need anything from me?", they ask it on a phone, and the classic Home
+answers it through a sidebar built for an owner's eighteen links behind a
+hamburger.
 
-| Door | Whose question it answers |
-|---|---|
-| `owner` | Are we growing, and is it costing what it should? |
-| `director` | What is going to go wrong this week, and what do I fix? |
-| `host` | What is true right now? (dark board, today only) |
-| `instructor` | Am I on today, and does anyone need anything from me? |
+**It started as four doors** — owner, director, host, instructor — and the
+other three were **removed after review**: their figures depend on live
+Radius reads and cross-collection maths this app cannot yet do quickly or
+completely, so the numbers they showed were not trustworthy. A dashboard
+that is confidently wrong is worse than no dashboard, and leadership
+already has pages whose numbers are known-good. Only the instructor door
+survived, because every figure on it is a direct read of that person's own
+shifts, the open-shift board, or announcements.
 
-**OFF by default for everybody.** `src/lib/newLook.js` keeps the preference
-in localStorage **per uid**, so signing out of one account and into another
-does not carry it across — which is exactly what you want when checking all
-four roles in a row. The toggle is at the bottom of the sidebar with Sign
-Out ("Try the new home" / "Back to classic"), and `NewHome` carries its own
-"back to classic" link.
+If the Radius API in `Ratio_Radius_API_Request_Brief.docx` is ever
+approved, the other three become worth revisiting — with real data.
 
-### Three ways back, in increasing order of severity
+### Who gets it
 
-1. **The toggle.** Instant, per person, no deploy.
-2. **It reverts itself.** `src/pages/HomeSwitch.jsx` wraps the new home in
-   its OWN error boundary. This matters: the app-wide ErrorBoundary in
-   App.jsx replaces the entire UI — sidebar included — so a crash in a new
-   door would take the "back to classic" toggle down with it and strand
-   the user. Instead the classic Home renders in its place, the opt-in is
-   switched back off so a reload doesn't loop into the same crash, and a
-   line explains what happened.
-3. **`git revert` of the single commit.** Everything arrived at once.
+`canUseNewLook()` in `src/lib/newLook.js` reads as **"not leadership"**
+rather than a list of job titles, so a custom centre role invented in
+Manage Roles lands on the right side without a code change. `isOwnerLike`
+(owner / admin-assistant / super-admin / director) and plain `admin` are
+excluded; everyone else is floor staff. `newLookActive()` is the check
+callers want: eligible AND opted in — a leftover localStorage value from
+when the other doors existed cannot resurrect anything.
 
-### Entitlement grants nothing
+**OFF by default, per uid.** Nobody meets a redesigned portal because a
+deploy landed, and signing out of one account into another does not carry
+the setting across.
 
-`doorsFor()` reads the permission booleans the app already enforces
-(`isOwner` / `isDirector` / `isHost` / `canSeeAdminPanel`). A custom centre
-role built in Manage Roles reaches the director door with no code change.
-`resolveDoor()` **ignores a saved preference the person isn't entitled to**,
-so a hand-edited localStorage string cannot promote anybody — pinned by
-`newLook.test.js`.
+### Three ways back
+
+1. **The toggle** at the bottom of the sidebar, and a **"Classic view"**
+   link on the page itself — needed because on a phone the sidebar is
+   behind a hamburger.
+2. **It reverts itself.** `src/pages/HomeSwitch.jsx` wraps it in its OWN
+   error boundary. This matters: the app-wide ErrorBoundary in App.jsx
+   replaces the entire UI — sidebar included — so a crash here would take
+   the toggle down with it and strand the user. It has already earned its
+   keep once, when the director board crashed in production. On failure
+   the classic Home renders, the opt-in is switched back off so a reload
+   doesn't loop, and a line explains what happened.
+3. **`git revert`** of the commit.
+
+### Mobile
+
+`MobileTabs` in `Layout.jsx` renders a bottom tab bar — Today / Schedule /
+Shifts / Chat — on phones only (`lg:hidden`, where the sidebar returns),
+and only when the new look is on. Shifts is hidden without `canTakeShifts`;
+Chat is hidden for volunteers, who get no team messaging. Targets are
+`min-h-[56px]`, past the 44px minimum. `.nl-tabbar` carries
+`env(safe-area-inset-bottom)` for the iOS home indicator, and the page ends
+in `pb-28` so nothing hides behind the bar.
 
 ### Shape of the change
 
 Only four existing files are touched: `index.html` (the Outfit webfont),
-`App.jsx` (route through `HomeSwitch`), `Layout.jsx` (the toggle), and
-`index.css` (tokens). Everything else is new files under
-`src/pages/homes/`, `src/components/newlook/`, `src/lib/newLook.js` and
-`src/lib/ratioShape.js`. `Home.jsx`, `Schedule.jsx`, `Admin.jsx` and
-`ShiftBoard.jsx` are unmodified.
-
-All new CSS is scoped under `.nl` (and `.nl-board` for the dark desk
-screen), so a classic page renders identically whether the block exists or
-not. Muted text is 5.1:1 on paper — the classic `text-gray-400` is 2.54:1,
-which fails WCAG AA.
-
-### The one recurring mark
-
-`RatioBar` draws ● an instructor, ○ a student, dashed ○ a student nobody is
-covering. It draws the UNIT ratio, not the headcount — four instructors and
-fourteen students is eighteen dots, which is a crowd, not a glance.
-Thresholds come from the settled policy (aim 1:3.5, floor 1:4) via
-`ratioShape.js`; it decides how a number is drawn, never staffing.
-
-Watch the null trap there: `Number(null)` is `0`, not `NaN`, so a count that
-hasn't loaded yet would read as "zero instructors" — the
-students-with-nobody-on-them emergency — flashing on every page load.
-`ratioOf` rejects absent values before coercing.
-
-**Not in this push:** mobile bottom tabs for instructors, and any repaint of
-the ~30 existing pages. The doors are step one.
+`App.jsx` (route through `HomeSwitch`), `Layout.jsx` (toggle + tabs), and
+`index.css` (tokens). `Home.jsx`, `Schedule.jsx`, `Admin.jsx` and
+`ShiftBoard.jsx` are unmodified. All new CSS is scoped under `.nl`, so a
+classic page renders identically whether the block exists or not. Muted
+text is 5.1:1 on paper — the classic `text-gray-400` is 2.54:1, which
+fails WCAG AA.
 
 ### Render tests exist now, and why
 
-`src/pages/homes/doors.render.test.jsx` renders all four doors in jsdom with
-the auth context and Firestore stubbed. It was added after the SECOND
-render-time crash to reach production in a row — the Manage Payroll TDZ bug,
-then the director door — because `vite build`, eslint and 700 unit tests all
+`src/pages/homes/InstructorHome.render.test.jsx` renders the page in jsdom
+with auth and Firestore stubbed. It was added after the SECOND render-time
+crash to reach production in a row — the Manage Payroll TDZ bug, then the
+director board — because `vite build`, eslint and 700 unit tests all
 inspect code and **none of them run React**. The only thing that catches a
 component which throws while rendering is rendering it.
 
@@ -475,17 +472,21 @@ Two traps it caught immediately, both of which had shipped:
   row for that person on that day, not one document. Rows are one per
   person per day and a person can have several; `availabilityWindows`
   iterates the argument, so a single document threw
-  `(dayAvail || []) is not iterable` and took the whole door down.
-  Merging also matters on its own: 10–2 plus 2–6 is 10–6 continuously,
-  and judging rows separately invents a clash at the seam.
+  `(dayAvail || []) is not iterable`. Merging matters on its own too:
+  10–2 plus 2–6 is 10–6 continuously, and judging rows separately invents
+  a clash at the seam.
 - `describeConflict(fit)` takes a **fit**, not the `{conflicts, windows,
-  worst}` wrapper `availabilityConflict` returns. Use `clash.worst.fit`.
+  worst}` wrapper `availabilityConflict` returns.
 
-Note `esbuild: { jsx: 'automatic' }` in `vite.config.js`: components rely on
-the automatic JSX runtime, the react plugin supplies it for the app build,
-but vitest transforms through esbuild, which defaults to the classic runtime
-— so every component rendered in a test died with "React is not defined"
-until both pipelines were made to agree.
+Note `esbuild: { jsx: 'automatic' }` in `vite.config.js`: components rely
+on the automatic JSX runtime, the react plugin supplies it for the app
+build, but vitest transforms through esbuild, which defaults to the classic
+runtime — so every component rendered in a test died with "React is not
+defined" until both pipelines agreed.
+
+Also mock Firestore **by collection**. A mock handing every listener the
+same rows let the availability listener receive shift documents, and a test
+passed for the wrong reason.
 
 ## Server-side dates: never use UTC
 
