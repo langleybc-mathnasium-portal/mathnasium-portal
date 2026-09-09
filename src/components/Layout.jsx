@@ -6,6 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 import Logo from './Logo';
 import RatioLogo from './RatioLogo';
 import MigrationBanner from './MigrationBanner';
+import { isNewLookOn, setNewLook } from '../lib/newLook';
 import CenterSwitcher from './CenterSwitcher';
 import {
   House, Megaphone, CalendarDays, MessageSquare, Settings, LogOut, Menu, X, Bell,
@@ -432,6 +433,23 @@ export default function Layout({ children }) {
               <p className="truncate text-xs text-gray-400">{roleLabel}</p>
             </div>
           </Link>
+          {/* Opt-in preview of the role-shaped home pages.
+              Deliberately down here with the other preferences rather than
+              in the nav: it changes ONE page (Home), and dressing it up as a
+              destination would oversell it. Off by default for everybody —
+              nobody meets a redesigned portal because a deploy landed. */}
+          <button
+            onClick={() => { setNewLook(profile?.uid, !isNewLookOn(profile?.uid)); window.location.reload(); }}
+            className="mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-gray-400 transition-colors hover:bg-gray-700 hover:text-white"
+            title="Preview the new role-based home page. Nothing else in the portal changes, and you can switch back here.">
+            <Sparkles size={16} />
+            <span className="flex-1">{isNewLookOn(profile?.uid) ? 'Back to classic home' : 'Try the new home'}</span>
+            {!isNewLookOn(profile?.uid) && (
+              <span className="rounded-full bg-gray-700 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-gray-300">
+                New
+              </span>
+            )}
+          </button>
           <button onClick={logout} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-400 transition-colors hover:bg-gray-700 hover:text-white">
             <LogOut size={16} /> Sign Out
           </button>

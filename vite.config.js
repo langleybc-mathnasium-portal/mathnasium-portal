@@ -12,6 +12,12 @@ export default defineConfig({
     // into its own chunk.
     chunkSizeWarningLimit: 900,
   },
+  // Components rely on the automatic JSX runtime (no `import React`).
+  // The react plugin applies that for the app build, but vitest transforms
+  // through esbuild, which defaults to the CLASSIC runtime — so every
+  // component rendered in a test died with "React is not defined". Stating
+  // it here makes both pipelines agree.
+  esbuild: { jsx: 'automatic' },
   test: {
     // Rules tests need the Firestore emulator running, so they're kept out
     // of the default suite — `npm test` must stay fast and dependency-free.
