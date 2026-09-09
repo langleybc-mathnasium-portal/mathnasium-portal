@@ -1,1 +1,86 @@
 @import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════════════════
+   NEW LOOK — the opt-in, role-shaped home pages.
+
+   Everything here is scoped under `.nl`, which only the new home pages
+   set. Nothing outside that class changes, so a classic page renders
+   byte-identically whether this block exists or not — and removing the
+   whole feature is removing files, not untangling styles.
+
+   Neutrals are warmed toward the Mathnasium red, so grey reads as chosen
+   rather than defaulted. Muted text sits at 5.1:1 on paper (the portal's
+   text-gray-400 is 2.54:1, which fails WCAG AA).
+   ═══════════════════════════════════════════════════════════════════════ */
+.nl {
+  --nl-paper:  #FCFAF8;
+  --nl-raised: #F4EDE8;
+  --nl-card:   #FFFFFF;
+  --nl-ink:    #1A1614;
+  --nl-ink2:   #4A403A;
+  --nl-muted:  #6E625B;
+  --nl-rule:   #E7DED7;
+
+  /* Mathnasium red. Identity and actions ONLY — never "error", or it
+     stops meaning either. */
+  --nl-brand:  #C8102E;
+  --nl-brandw: #FBEAEC;
+
+  --nl-ok:     #17795E;
+  --nl-okw:    #E4F2ED;
+  --nl-warn:   #A9640B;
+  --nl-warnw:  #FBEEDC;
+  /* "a person typed this" — already how the payroll table reads today */
+  --nl-note:   #6D4AA8;
+  --nl-notew:  #F0EAFA;
+
+  color: var(--nl-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The front desk board is dark because it lives on an always-on screen
+   facing the room, not on a page someone opens and closes. */
+.nl-board {
+  --nl-paper:  #16120F;
+  --nl-raised: #241D19;
+  --nl-card:   #241D19;
+  --nl-ink:    #F7F2EE;
+  --nl-ink2:   #D8CCC4;
+  --nl-muted:  #9A8B82;
+  --nl-rule:   #33291F;
+  --nl-brand:  #FF7A8A;
+  --nl-brandw: #3A1C21;
+  --nl-ok:     #57C2A3;
+  --nl-okw:    #12332B;
+  --nl-warn:   #E0A44E;
+  --nl-warnw:  #33260F;
+  --nl-note:   #B79BEA;
+  --nl-notew:  #241A38;
+}
+
+/* Headings get a little more character than the body. Loaded from the
+   system stack first so nothing blocks paint if the webfont is slow. */
+.nl-display {
+  font-family: "Outfit", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  letter-spacing: -0.02em;
+}
+
+/* The ratio motif: filled = an instructor, hollow = a student,
+   dashed = a student nobody is covering. */
+.nl-dot {
+  display: block; border-radius: 9999px;
+  width: var(--d, 9px); height: var(--d, 9px);
+  border: 1.5px solid currentColor;
+}
+.nl-dot--t { background: currentColor; }
+.nl-dot--gap { border-style: dashed; opacity: .55; }
+
+/* Instructors are on phones; the bottom bar needs to clear the home
+   indicator on iOS. */
+.nl-tabbar { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .nl *, .nl *::before, .nl *::after {
+    animation-duration: .001ms !important; transition-duration: .001ms !important;
+  }
+}
