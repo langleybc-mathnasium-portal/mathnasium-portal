@@ -29,6 +29,7 @@ const NotificationPreferences   = lazy(() => import('./pages/NotificationPrefere
 const PlatformRevenue           = lazy(() => import('./pages/PlatformRevenue'));
 const PlatformChat              = lazy(() => import('./pages/PlatformChat'));
 const CenterAnalytics           = lazy(() => import('./pages/CenterAnalytics'));
+const MyPay                     = lazy(() => import('./pages/MyPay'));
 const ConfirmSignOut            = lazy(() => import('./pages/ConfirmSignOut'));
 const SupplyDemand              = lazy(() => import('./pages/SupplyDemand'));
 const StaffingBoard             = lazy(() => import('./pages/StaffingBoard'));
@@ -156,6 +157,10 @@ function AppRoutes() {
             can't see who changed what. */}
         <Route path="/availability-log" element={<ProtectedRoute requireOwner allowOps><Layout><AvailabilityLog /></Layout></ProtectedRoute>} />
         <Route path="/notifications" element={<ProtectedRoute><Layout><NotificationPreferences /></Layout></ProtectedRoute>} />
+        {/* A person's own pay projection. The page gates itself on being
+            paid hourly — volunteers and salaried staff would get a number
+            that is not how they are paid. */}
+        <Route path="/my-pay" element={<ProtectedRoute><Layout><MyPay /></Layout></ProtectedRoute>} />
         <Route path="/account" element={<ProtectedRoute><Layout><AccountDetails /></Layout></ProtectedRoute>} />
         <Route path="/scheduler-creation" element={<ProtectedRoute><Layout><SchedulerCreation /></Layout></ProtectedRoute>} />
         <Route path="/connectors" element={<ProtectedRoute><Layout><Connectors /></Layout></ProtectedRoute>} />

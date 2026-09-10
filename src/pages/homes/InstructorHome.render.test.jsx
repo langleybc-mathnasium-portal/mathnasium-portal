@@ -192,6 +192,21 @@ describe('mobile', () => {
 });
 
 describe('which side am I on, and when do I move', () => {
+  // The clock is FIXED at 4pm. These assertions depend on where "now" falls
+  // relative to the blocks, so with a real clock they pass or fail
+  // depending on what time the suite happens to run — which is how a
+  // genuine bug (a "you move to" line shown before the shift had started)
+  // hid behind a green run earlier in the day.
+  //
+  // Only Date is faked; timers are left alone so React still works.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const noon = new Date();
+    noon.setHours(16, 0, 0, 0);
+    vi.setSystemTime(noon);
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
   // A real day out of Neeru's sheet. Jason Soo is Elementary 3:00–5:00 and
   // High School 5:00–6:30 — the transfer instructors currently have to ask
   // about out loud.

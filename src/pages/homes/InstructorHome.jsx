@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { collection, onSnapshot, query, where, orderBy, limit } from 'firebase/firestore';
-import { Mail, ArrowRight, Megaphone, CalendarDays, MoveRight } from 'lucide-react';
+import { Mail, ArrowRight, Megaphone, CalendarDays, MoveRight, Wallet } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../contexts/AuthContext';
 import { setNewLook } from '../../lib/newLook';
+import { isHourlyPaid } from '../../lib/payProjection';
 import { watchInstructorAssignments } from '../../lib/scheduler-data';
 import {
   blocksForPerson, blockAt, nextSwitch, hasSwitch, sideLabel,
@@ -35,7 +36,8 @@ import { fmtTime, fmtDay, todayISO, minutesOf } from '../../components/newlook/f
  *   - the page ends with clearance for the bottom tab bar
  */
 export default function InstructorHome() {
-  const { profile, activeCenterId, mySubRoles, canTakeShifts } = useAuth();
+  const { profile, activeCenterId, mySubRoles, canTakeShifts, isVolunteer, centerConfig } = useAuth();
+  const showPay = isHourlyPaid({ displayName: profile?.displayName, isVolunteer }, centerConfig);
   const [shifts, setShifts] = useState(null);        // null = still loading
   const [dayRoster, setDayRoster] = useState({ date: null, rows: null });
   const [openShifts, setOpenShifts] = useState([]);
@@ -350,6 +352,23 @@ export default function InstructorHome() {
             <Btn to="/shift-board" variant="ghost" size="sm"
               className="w-full justify-center sm:w-auto">
               <CalendarDays size={14} /> Look
+            </Btn>
+          </div>
+        </Card>
+      )}
+
+      {/* ── Their own pay period ────────────────────────────────── */}
+      {showPay && (
+        <Card>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <b className="block text-[14.5px]">Your hours this pay period</b>
+              <span className="mt-0.5 block text-[12.5px]" style={{ color: 'var(--nl-muted)' }}>
+                With an estimate of what they come to — not a payslip.
+              </span>
+            </div>
+            <Btn to="/my-pay" variant="ghost" size="sm" className="w-full justify-center sm:w-auto">
+              <Wallet size={14} /> Open
             </Btn>
           </div>
         </Card>

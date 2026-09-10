@@ -7,6 +7,7 @@ import Logo from './Logo';
 import RatioLogo from './RatioLogo';
 import MigrationBanner from './MigrationBanner';
 import { canUseNewLook, isNewLookOn, setNewLook } from '../lib/newLook';
+import { isHourlyPaid } from '../lib/payProjection';
 import CenterSwitcher from './CenterSwitcher';
 import {
   House, Megaphone, CalendarDays, MessageSquare, Settings, LogOut, Menu, X, Bell,
@@ -50,7 +51,11 @@ export default function Layout({ children }) {
   // The phone-first home is for people whose job is working shifts.
   // Leadership keeps the classic pages, whose numbers are known-good.
   const newLookEligible = canUseNewLook(auth);
+  const isOwnerLikeNav = isSuperAdmin || isOwner || isAdminAssistant || isDirector;
   const newLookOn = newLookEligible && isNewLookOn(profile?.uid);
+  // Volunteers are unpaid and salaried staff aren't paid from the hourly
+  // sheet, so a pay projection would be wrong for both.
+  const showPay = isHourlyPaid({ displayName: profile?.displayName, isVolunteer }, auth.centerConfig);
   const location = useLocation();
   const [open, setOpen] = useState(false);
   const [openShifts, setOpenShifts] = useState([]);
@@ -162,6 +167,11 @@ export default function Layout({ children }) {
   // so it's not theirs — see canTakeShifts in AuthContext.
   if (!isSuperAdmin && !isOwner && canTakeShifts) {
     general.push({ to: '/shift-board', label: 'Shift Board', icon: Briefcase, badge: boardCount });
+  }
+  // Their own hours and an estimate of what those come to. Not for owners
+  // (they read the real payroll sheet) or for anyone not paid by the hour.
+  if (!isOwnerLikeNav && showPay) {
+    general.push({ to: '/my-pay', label: 'My Pay', icon: Wallet });
   }
 
   // ─── OWNER LAYOUT ──────────────────────────────────────────────────
@@ -492,7 +502,9 @@ export default function Layout({ children }) {
             the single worst part of the portal on a phone. `lg:hidden`
             because the sidebar is back at that width and two navigations
             would just compete. */}
-        {newLookOn && <MobileTabs canTakeShifts={canTakeShifts} isVolunteer={isVolunteer} />}
+        {newLookOn && (
+          <MobileTabs canTakeShifts={canTakeShifts} isVolunteer={isVolunteer} showPay={showPay} />
+        )}
       </div>
     </div>
   );
@@ -506,12 +518,13 @@ export default function Layout({ children }) {
  * up shifts has no use for the board, so both tabs are conditional rather
  * than shown-and-broken.
  */
-function MobileTabs({ canTakeShifts, isVolunteer }) {
+function MobileTabs({ canTakeShifts, isVolunteer, showPay }) {
   const location = useLocation();
   const tabs = [
     { to: '/', label: 'Today', icon: House, exact: true },
     { to: '/schedule', label: 'Schedule', icon: CalendarDays },
     canTakeShifts && { to: '/shift-board', label: 'Shifts', icon: Briefcase },
+    showPay && { to: '/my-pay', label: 'Pay', icon: Wallet },
     !isVolunteer && { to: '/chat', label: 'Chat', icon: MessageSquare },
   ].filter(Boolean);
 

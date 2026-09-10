@@ -510,6 +510,49 @@ Covered by five tests in `tests/rules/shifts.rules.test.js`, including that
 another centre's manager is still refused and that instructors cannot
 write.
 
+### My Pay — a person's own projection
+
+`/my-pay` shows hourly staff their own pay period: the shifts in it, hours,
+sick-leave standing, stat-pay eligibility, and — once they enter an hourly
+rate — an estimate of gross.
+
+**It is not payroll and says so repeatedly.** No deductions (tax, CPP, EI),
+and the caveat sits WITH the number rather than in a footer: "This is an
+estimate, not a payslip… what you're actually paid comes from QuickBooks."
+
+Two rules the page follows throughout:
+
+- **Hours are the fact; money is the estimate.** Without a rate it leads
+  with HOURS, not "$0.00" — a zero reads as an answer. `grossPay` returns
+  `null` rather than 0 when there's no usable rate, and rejects absent hours
+  (`Number(null)` is 0, not NaN — the same trap as `ratioOf`).
+- **It mirrors Manage Payroll instead of recomputing it**, so the two can't
+  drift: `pay hours = 0 if no-show, else payHoursOverride ?? scheduled`.
+  **There is deliberately NO OVERTIME**, because Ratio's payroll doesn't
+  compute it either — inventing time-and-a-half would disagree with the
+  money that actually arrives, and people budget against this.
+
+Pay periods are 11th–25th and 26th–10th (`periodFor`), matching the Manage
+Payroll default. Sick leave and probation reuse the settled figures (5 days,
+90 days); a missing hire date counts as ELIGIBLE exactly as the payroll page
+treats it, and the UI says the date is missing rather than hiding the
+assumption. Stat pay comes from `statPay.js` — the page shows the 15-of-30
+qualifying-day progress, not just yes/no.
+
+**Who sees it:** `isHourlyPaid()` excludes volunteers (unpaid) and anyone in
+`centerConfig.salaryStaff` (paid outside the hourly sheet). Both would get a
+number that isn't how they're paid, so the page turns them away with the
+reason rather than rendering an empty state. The route gates itself as well
+as the nav, since the URL is reachable directly.
+
+**The hourly rate** lives at `users/{uid}/private/pay` (`src/lib/payRate.js`)
+— NOT on the user document, which every signed-in user can read; a wage
+there would show all 33 staff each other's pay. That private subtree is
+readable by the person plus owner/super-admin/admin, so **leadership can see
+what somebody entered**. That is a deliberate choice, and the box says so in
+plain words before you type: "Other instructors can't see this. The centre
+owner and admins can."
+
 ### Render tests exist now, and why
 
 `src/pages/homes/InstructorHome.render.test.jsx` renders the page in jsdom
